@@ -512,7 +512,7 @@ Sugestão de disciplina: uma entrada por decisão, com data e porquê.
 ## Tarefas
 
 - [ ] Substituir o exemplo do main.py pela primeira funcionalidade real
-- [ ] Adicionar ícones em data/icons/ (ver data/icons/README.md)
+- [ ] Personalizar o ícone vetorial em data/icons/scalable/apps/__APPID__.svg
 - [ ] Registar o projeto no README com capturas de ecrã
 '''
 

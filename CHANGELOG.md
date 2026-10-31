@@ -3,6 +3,16 @@
 Todas as alterações relevantes a este projeto serão documentadas neste ficheiro.  
 O formato baseia-se em [Keep a Changelog](https://keepachangelog.com/pt-PT/1.0.0/).
 
+## [0.1.2] - 2026-10-31
+
+### Adicionado
+- Geração automática de ícone vetorial de exemplo (`data/icons/scalable/apps/<appid>.svg`) no tema `hicolor`.
+- Suporte a cabeçalhos em comentário XML (`<!-- ... -->`) para ficheiros `.svg` em `estilo_para()`.
+
+### Alterado
+- `scripts/build_packages.sh` inclui automaticamente o ícone SVG gerado em `debian/<dist>.install` (`usr/share/icons/hicolor/scalable/apps/`).
+- Guia `data/icons/README.md` e `docs/notas.md` atualizados para refletir a presença do ícone SVG funcional de origem.
+
 ## [0.1.1] - 2026-10-31
 
 ### Corrigido
@@ -19,7 +29,6 @@ O formato baseia-se em [Keep a Changelog](https://keepachangelog.com/pt-PT/1.0.0
 - O token `__CLASSE__` passa a dar nome à classe principal da aplicação GTK3 (`<Classe>App`) em `src/<pkg>/main.py`.
 
 ### Adicionado
-- Ícone vetorial de exemplo (`data/icons/scalable/apps/<appid>.svg`) configurado no tema `hicolor` e incluído automaticamente em `debian/<dist>.install`.
 - Testes unitários de persistência XDG (`guardar_config`, `carregar_config` e recuperação perante JSON corrompido) em `tests/test_smoke.py`.
 - Comentários explicativos detalhados em todo o código de `urze.py`.
 

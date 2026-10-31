@@ -18,7 +18,7 @@ Não requer dependências externas — funciona nativamente com o `python3` da b
   3. *pip*: Instala a aplicação no venv em modo editável e sem isolamento de rede (`pip install --no-build-isolation -e .`).
   4. *check*: Validação com `pip check` e verificação de importação do GTK3.
 - **Tematização Desacoplada:** Módulo `appearance` com alternância entre temas (sistema, claro e escuro) e seleção de fontes em tempo real via Pango/CSS.
-- **Distribuição Pronta:** Lançador XDG (`.desktop`), metadados AppStream (`.metainfo.xml`) e script automatizado para gerar pacotes Debian (`scripts/build_packages.sh`).
+- **Distribuição Pronta:** Lançador XDG (`.desktop`), ícone vetorial SVG (`hicolor`), metadados AppStream (`.metainfo.xml`) e script automatizado para gerar pacotes Debian (`scripts/build_packages.sh`).
 
 ---
 
