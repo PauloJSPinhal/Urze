@@ -19,6 +19,7 @@ O formato baseia-se em [Keep a Changelog](https://keepachangelog.com/pt-PT/1.0.0
 - O token `__CLASSE__` passa a dar nome à classe principal da aplicação GTK3 (`<Classe>App`) em `src/<pkg>/main.py`.
 
 ### Adicionado
+- Ícone vetorial de exemplo (`data/icons/scalable/apps/<appid>.svg`) configurado no tema `hicolor` e incluído automaticamente em `debian/<dist>.install`.
 - Testes unitários de persistência XDG (`guardar_config`, `carregar_config` e recuperação perante JSON corrompido) em `tests/test_smoke.py`.
 - Comentários explicativos detalhados em todo o código de `urze.py`.
 

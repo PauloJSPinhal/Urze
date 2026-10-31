@@ -587,24 +587,48 @@ def t_icons_readme() -> str:
     return '''\
 # Ícones do __VISIVEL__
 
-Pasta destinada aos ícones da aplicação. Enquanto estiver vazia, o
-lançador mostra um ícone genérico do ambiente — funciona, mas é feio.
+Pasta destinada aos ícones da aplicação. O **urze** já gera um ícone vetorial
+funcional de exemplo em `scalable/apps/__APPID__.svg`, pelo que o lançador
+`.desktop` e o pacote `.deb` têm um ícone válido desde o primeiro momento.
 
 ## Layout recomendado (tema hicolor)
 
+    scalable/apps/__APPID__.svg          ← já incluído (um SVG resolve tudo)
     16x16/apps/__APPID__.png, 22x22/…, 24x24/…, 32x32/…,
     48x48/…, 64x64/…, 128x128/apps/__APPID__.png
-    scalable/apps/__APPID__.svg          ← o ideal: um SVG resolve tudo
 
-## Para completar
+## Para personalizar
 
-1. Coloca aqui os ficheiros com o nome `__APPID__.*`;
-2. Acrescenta as linhas correspondentes a `debian/__DIST__.install`
-   (gerado por scripts/build_packages.sh), por exemplo:
+1. Substitui `scalable/apps/__APPID__.svg` pelo ícone definitivo do teu projeto;
+2. Se adicionares variantes PNG por resolução, acrescenta as linhas
+   correspondentes a `debian/__DIST__.install` (em `scripts/build_packages.sh`);
+3. No `.deb`, o `dh_icons` atualiza as caches de ícones automaticamente.
+'''
 
-       data/icons/scalable/apps/__APPID__.svg usr/share/icons/hicolor/scalable/apps/
 
-3. No .deb, o dh_icons atualiza as caches de ícones automaticamente.
+def t_icon_svg() -> str:
+    """Template do ícone vetorial de exemplo em `data/icons/scalable/apps/__APPID__.svg`.
+
+    [MELHORIA] Garante que `Icon=__APPID__` no ficheiro `.desktop` aponta para
+    um ficheiro real logo após a criação do projeto e no pacote `.deb`.
+    """
+    return '''\
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#3584e4"/>
+      <stop offset="100%" stop-color="#1a5fb4"/>
+    </linearGradient>
+  </defs>
+  <rect x="12" y="12" width="104" height="104" rx="24" fill="url(#bg)"/>
+  <rect x="28" y="32" width="72" height="64" rx="8" fill="#ffffff" fill-opacity="0.92"/>
+  <rect x="28" y="32" width="72" height="14" rx="6" fill="#1c71d8"/>
+  <circle cx="38" cy="39" r="3" fill="#ffffff"/>
+  <circle cx="48" cy="39" r="3" fill="#ffffff" fill-opacity="0.7"/>
+  <rect x="40" y="58" width="48" height="8" rx="4" fill="#3584e4"/>
+  <rect x="48" y="74" width="32" height="8" rx="4" fill="#99c1f1"/>
+</svg>
 '''
 
 
@@ -1589,10 +1613,11 @@ FIM
 printf '\tdh $@ --with python3 --buildsystem=pybuild\n' >> debian/rules
 chmod +x debian/rules
 
-# Ficheiros extra do pacote binário (desktop + metainfo; ícones: ver data/icons/README.md)
+# Ficheiros extra do pacote binário (desktop + metainfo + ícone SVG)
 cat > "debian/${DIST}.install" <<FIM
 data/__APPID__.desktop usr/share/applications/
 data/__APPID__.metainfo.xml usr/share/metainfo/
+data/icons/scalable/apps/__APPID__.svg usr/share/icons/hicolor/scalable/apps/
 FIM
 
 echo "3.0 (native)" > debian/source/format
@@ -1622,6 +1647,7 @@ FICHEIROS = [
     ("data/__APPID__.desktop", "lançador do ambiente de trabalho", t_desktop, False),
     ("data/__APPID__.metainfo.xml", "metadados AppStream", t_metainfo, False),
     ("data/icons/README.md", "guia dos ícones", t_icons_readme, False),
+    ("data/icons/scalable/apps/__APPID__.svg", "ícone vetorial de exemplo (hicolor)", t_icon_svg, False),
     ("scripts/install.py", "instalador em 4 fases + modo --check", t_install, True),
     ("scripts/build_packages.sh", "empacotamento Debian (.deb)", t_build, True),
     ("tests/test_smoke.py", "testes de fumo sem GTK", t_test_smoke, False),
@@ -1644,7 +1670,7 @@ def estilo_para(relativo: str) -> str:
     """Escolhe o estilo de comentário do cabeçalho consoante a extensão."""
     if relativo.endswith(".css"):
         return "css"
-    if relativo.endswith(".md") or relativo.endswith(".xml"):
+    if relativo.endswith((".md", ".xml", ".svg")):
         return "html"
     return "#"
 

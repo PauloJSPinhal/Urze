@@ -105,7 +105,10 @@ meu-app/
 ├── data/
 │   ├── pt.paulojspinhal.meu_app.desktop       # Lançador do ambiente de trabalho
 │   ├── pt.paulojspinhal.meu_app.metainfo.xml  # Metadados AppStream
-│   └── icons/README.md                        # Guia para disposição dos ícones
+│   └── icons/
+│       ├── README.md                          # Guia para disposição dos ícones
+│       └── scalable/apps/
+│           └── pt.paulojspinhal.meu_app.svg   # Ícone vetorial de exemplo (hicolor)
 ├── tests/
 │   └── test_smoke.py                          # Testes sem interface gráfica (inclui persistência XDG)
 └── src/
