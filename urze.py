@@ -37,47 +37,100 @@ import keyword
 import re
 import sys
 import xml.sax.saxutils
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # ------------------------------------------------------------------
-# Estado global preenchido pelo main() antes de gerar os ficheiros.
+# Valores por omissão para cabeçalhos e metadados.
 # ------------------------------------------------------------------
-AUTOR = "PauloJSPinhal"
-GITHUB = "https://github.com/PauloJSPinhal"
-DATA = datetime.date.today().isoformat()
-DIST = ""        # nome PyPI/diretório, com traços:  meu-app
-PKG = ""         # nome de import, com underscores: meu_app
-APPID = ""       # id de aplicação:                 pt.meu-app
-CLASSE = ""      # CamelCase:                       MeuApp
-VISIVEL = ""     # nome apresentável:               Meu App
-DESC = ""        # descrição curta sanitizada
-NAO_INTERATIVO = False
-
-TOKENS = {}      # substituição textual: __DIST__, __PKG__, …
+AUTOR_PADRAO = "PauloJSPinhal"
+GITHUB_PADRAO = "https://github.com/PauloJSPinhal"
 
 
-def subst(texto):
-    """Aplica todos os tokens ao texto de um template."""
-    for chave, valor in TOKENS.items():
-        texto = texto.replace(chave, valor)
-    return texto
+# ------------------------------------------------------------------
+# Contexto do projeto a gerar
+# ------------------------------------------------------------------
+# [MELHORIA] Antes, estes dados viviam em variáveis globais mutáveis
+# (DIST, PKG, APPID, TOKENS, etc.) modificadas com `global` em main().
+# Agrupar tudo numa dataclass elimina o estado global, torna o fluxo de
+# dados explícito e permite testar ou invocar a geração várias vezes.
+@dataclass
+class ContextoProjeto:
+    """Guarda todos os metadados normalizados e o mapa de tokens do projeto."""
+
+    dist: str                              # Nome PyPI/diretório, com traços:  meu-app
+    pkg: str                               # Nome de import Python, com _:     meu_app
+    appid: str                             # ID D-Bus/GTK (3 segmentos):       pt.paulojspinhal.meu_app
+    classe: str                            # Prefixo CamelCase para classes:   MeuApp
+    visivel: str                           # Nome legível para humanos:        Meu App
+    desc: str                              # Descrição curta sanitizada
+    autor: str = AUTOR_PADRAO              # Nome do autor nos cabeçalhos
+    github: str = GITHUB_PADRAO            # URL base do GitHub do autor
+    data: str = field(default_factory=lambda: datetime.date.today().isoformat())
+    tokens: dict[str, str] = field(init=False)
+
+    def __post_init__(self) -> None:
+        """Constrói o dicionário de substituição textual para os templates.
+
+        [MELHORIA] Incluímos variantes escapadas para XML/Pango Markup
+        (__DESC_XML__, __VISIVEL_XML__, __AUTOR_XML__) para evitar que
+        caracteres como '&', '<' ou '>' quebrem o AppStream XML ou o
+        Pango Markup da janela GTK3.
+        """
+        self.tokens = {
+            "__DIST__": self.dist,
+            "__PKG__": self.pkg,
+            "__APPID__": self.appid,
+            "__CLASSE__": self.classe,
+            "__VISIVEL__": self.visivel,
+            "__DESC__": self.desc,
+            "__AUTOR__": self.autor,
+            "__GITHUB__": self.github,
+            "__DATA__": self.data,
+            "__DESC_XML__": xml.sax.saxutils.escape(self.desc),
+            "__VISIVEL_XML__": xml.sax.saxutils.escape(self.visivel),
+            "__AUTOR_XML__": xml.sax.saxutils.escape(self.autor),
+        }
 
 
-def cabec(ficheiro, papel, estilo="#"):
-    """Bloco de cabeçalho em caixa, comum a todos os ficheiros gerados.
+# ------------------------------------------------------------------
+# Funções auxiliares de texto, cabeçalhos e validação de nomes
+# ------------------------------------------------------------------
+
+
+def subst(texto: str, ctx: ContextoProjeto) -> str:
+    """Aplica todos os tokens do contexto ao texto de um template.
+
+    [MELHORIA] Em vez de um ciclo `for chave, valor in TOKENS: texto.replace(...)`
+    (que fazia substituições em cascata se o texto introduzido pelo utilizador
+    contivesse acidentalmente o nome de outro token), compilamos uma expressão
+    regular única e substituímos todos os tokens numa só passagem.
+    """
+    padrao = re.compile("|".join(re.escape(k) for k in ctx.tokens))
+    return padrao.sub(lambda m: ctx.tokens[m.group(0)], texto)
+
+
+def cabec(ctx: ContextoProjeto, ficheiro: str, papel: str, estilo: str = "#") -> str:
+    """Gera o bloco de cabeçalho em caixa, comum a todos os ficheiros gerados.
 
     Identifica (projeto, ficheiro), caracteriza (autor, data, github) e
     situa o ficheiro (papel) na estrutura do projeto.
+    Adapta a sintaxe de comentário ao tipo de ficheiro:
+      - '#'    : Python, Bash, TOML, .desktop, .gitignore
+      - 'css'  : folhas de estilo /* ... */
+      - 'html' : Markdown e XML <!-- ... -->
     """
     linhas = [
-        f"Projeto : {DIST}",
+        f"Projeto : {ctx.dist}",
         f"Ficheiro: {ficheiro} — {papel}",
-        f"Autor   : {AUTOR}",
-        f"Criado  : {DATA}",
-        f"GitHub  : {GITHUB}",
+        f"Autor   : {ctx.autor}",
+        f"Criado  : {ctx.data}",
+        f"GitHub  : {ctx.github}",
     ]
+    # Calcula a linha mais comprida para desenhar a barra '===' à medida.
     largura = max(len(x) for x in linhas)
     barra = "=" * largura
+
     if estilo == "#":
         return "".join(f"# {x}\n" for x in [barra, *linhas, barra])
     if estilo == "css":
@@ -89,9 +142,13 @@ def cabec(ficheiro, papel, estilo="#"):
     raise ValueError(f"estilo de cabeçalho desconhecido: {estilo}")
 
 
-def perguntar(rotulo, omissao=""):
-    """Pergunta interativa com valor por omissão (Enter aceita)."""
-    if NAO_INTERATIVO or not sys.stdin.isatty():
+def perguntar(rotulo: str, omissao: str = "", nao_interativo: bool = False) -> str:
+    """Pergunta interativa no terminal com valor por omissão (Enter aceita).
+
+    Se estiver em modo não-interativo (-y) ou se o stdin não for um terminal
+    (ex.: pipe ou CI), devolve imediatamente o valor por omissão sem bloquear.
+    """
+    if nao_interativo or not sys.stdin.isatty():
         return omissao
     sugestao = f" [{omissao}]" if omissao else ""
     try:
@@ -102,14 +159,20 @@ def perguntar(rotulo, omissao=""):
     return resposta or omissao
 
 
-def normalizar(bruto):
-    """Normaliza o nome do projeto para as três formas (dist, pkg).
+def normalizar(bruto: str, nao_interativo: bool = False) -> tuple[str, str]:
+    """Normaliza o nome do projeto para as duas formas base: (dist, pkg).
 
-    Convenção: PyPI/diretório com traços (meu-app), import com underscores
-    (meu_app). Sugere a forma normalizada e permite corrigir.
+    Convenção Python/PyPI/Debian:
+      - `dist` (diretório, pacote PyPI e pacote .deb): minúsculas e traços (ex.: 'meu-app')
+      - `pkg`  (módulo de import Python em src/):      minúsculas e underscores (ex.: 'meu_app')
+
+    Valida se o nome começa por letra, não excede 40 caracteres e não colide
+    com palavras reservadas da linguagem Python (ex.: 'class', 'import').
     """
+    # Converte espaços e underscores em traços e junta traços repetidos.
     dist = re.sub(r"[\s_]+", "-", bruto.strip().lower())
     dist = re.sub(r"-{2,}", "-", dist).strip("-")
+
     if not re.fullmatch(r"[a-z]([a-z0-9-]*[a-z0-9])?", dist):
         sys.exit(
             f"urze: nome inválido: {bruto!r}\n"
@@ -120,28 +183,64 @@ def normalizar(bruto):
         sys.exit(f"urze: {pkg!r} é uma palavra reservada do Python; escolhe outro nome.")
     if len(dist) > 40:
         sys.exit("urze: nome demasiado longo (máximo 40 caracteres).")
-    if dist != bruto.strip() and not NAO_INTERATIVO and sys.stdin.isatty():
-        confirmado = perguntar(f"Nome normalizado: {bruto!r} → {dist!r} (Enter confirma, ou escreve outro)", dist)
+
+    # Se o nome sofreu alterações (ex.: tinha maiúsculas ou espaços), pede confirmação.
+    if dist != bruto.strip() and not nao_interativo and sys.stdin.isatty():
+        confirmado = perguntar(
+            f"Nome normalizado: {bruto!r} → {dist!r} (Enter confirma, ou escreve outro)",
+            dist,
+            nao_interativo=nao_interativo,
+        )
         if confirmado and confirmado != dist:
-            return normalizar(confirmado)
+            return normalizar(confirmado, nao_interativo=nao_interativo)
     return dist, pkg
+
+
+def construir_appid(autor: str, pkg: str) -> str:
+    """Constrói um Application ID válido para GTK/GLib/D-Bus e AppStream.
+
+    [MELHORIA CRÍTICA] Antes o script gerava `pt.<dist>` (apenas 2 segmentos,
+    1 ponto). A função `Gio.Application.id_is_valid()` do GLib exige:
+      1. Pelo menos DOIS pontos (mínimo 3 segmentos: ex. `pt.autor.app`);
+      2. Nenhum segmento pode começar por algarismo;
+      3. Apenas letras ASCII, dígitos, '_' ou '-' (sendo '_' o mais seguro para D-Bus).
+    Com apenas 1 ponto, `Gtk.Application(application_id=...)` abortava no arranque!
+    """
+    # Limpa o nome do autor para apenas letras e dígitos em minúsculas.
+    slug_autor = re.sub(r"[^a-z0-9]", "", autor.lower())
+    if not slug_autor or not slug_autor[0].isalpha():
+        slug_autor = "app" + slug_autor
+    return f"pt.{slug_autor}.{pkg}"
+
+
+def sanitizar_texto_curto(texto: str, fallback: str) -> str:
+    """Remove quebras de linha, espaços múltiplos e aspas duplas.
+
+    [MELHORIA] Usado tanto em `DESC` como em `VISIVEL` e `AUTOR` para garantir
+    que nenhum valor introduzido pelo utilizador fecha acidentalmente uma string
+    literal (`"..."`) no código Python ou no `pyproject.toml` gerados.
+    """
+    limpo = re.sub(r"\s+", " ", texto.replace('"', "'").replace("\\", "/")).strip()
+    return limpo or fallback
 
 
 # ------------------------------------------------------------------
 # TEMPLATES — ficheiros de topo do projeto gerado.
-# Cada função devolve o corpo (sem o cabeçalho em caixa, que é
-# acrescentado pela rotina de escrita).
+# Cada função `t_*()` devolve o corpo do ficheiro com marcadores
+# (__DIST__, __PKG__, etc.). O cabeçalho em caixa é acrescentado
+# automaticamente pela rotina `escrever()`.
 # ------------------------------------------------------------------
 
 
-def t_run():
+def t_run() -> str:
+    """Template do script `./run` na raiz do projeto gerado."""
     return '''\
 #!/usr/bin/env bash
 # Script de arranque em desenvolvimento: executa o pacote dentro do venv,
 # nunca contra o Python do sistema. É o equivalente de `python -m __PKG__`
 # com o ambiente certo garantido.
 #
-# Porqui -m e não src/__PKG__/main.py: o src layout exige que o pacote
+# Porquê `-m` e não `src/__PKG__/main.py`: o src layout exige que o pacote
 # esteja importável (o install.py faz `pip install -e .` no venv); correr
 # o ficheiro diretamente quebraria os imports relativos do pacote.
 set -euo pipefail
@@ -157,7 +256,8 @@ exec "$PY" -m __PKG__ "$@"
 '''
 
 
-def t_pyproject():
+def t_pyproject() -> str:
+    """Template do `pyproject.toml` (PEP 621 + Hatchling)."""
     return '''\
 # Fonte ÚNICA da verdade sobre o projeto: metadados, dependências Python,
 # entry points e configuração das ferramentas (pytest, hatchling).
@@ -212,7 +312,8 @@ packages = ["src/__PKG__"]
 '''
 
 
-def t_requirements():
+def t_requirements() -> str:
+    """Template do `requirements.txt` (opcional, para lock de versões pip)."""
     return '''\
 # Ficheiro de bloqueio GERADO — não editar à mão.
 #
@@ -225,32 +326,40 @@ def t_requirements():
 '''
 
 
-def t_requirements_apt():
+def t_requirements_apt() -> str:
+    """Template do `requirements-apt.txt` (dependências Debian do projeto).
+
+    [MELHORIA] Adicionados `python3-pip` e `python3-hatchling` para que o
+    `pip install --no-build-isolation -e .` funcione 100% com pacotes de
+    sistema Debian, sem precisar de ir à internet descarregar o hatchling.
+    """
     return '''\
 # Dependências de SISTEMA (Debian/GNU Linux) do projeto.
 #
 # É a fonte única para três consumidores:
-#   1. scripts/install.py       — verifica e instala o que falta (fase 1);
+#   1. scripts/install.py        — verifica e instala o que falta (fase 1);
 #   2. scripts/build_packages.sh — gera a linha Depends: do debian/control;
-#   3. CI (--check)             — falha se algo faltar, sem instalar.
+#   3. CI (--check)              — falha se algo faltar, sem instalar.
 #
 # Sintaxe à la debian/control:  nome-do-pacote (>= versão)  — a restrição
 # de versão é opcional e validada pelo install.py com dpkg.
-# No Depends: gerado, as restrições ficam sem espaços (aceite pelo dpkg).
 #
 # Nota: em Flatpak esta lista é ignorada (as libs vêm do runtime);
 # o install.py deteta FLATPAK_ID e salta a fase apt.
 
 python3-venv            # cria o .venv — tem de vir antes da fase 2
+python3-pip             # instalador pip dentro do venv
+python3-hatchling       # backend de build (permite pip install --no-build-isolation)
 python3-gi              # PyGObject: torna o GTK acessível como `import gi`
 python3-gi-cairo        # ponte PyGObject ↔ cairo
-gir1.2-gtk-3.0          # GTK3 (introspecção)
+gir1.2-gtk-3.0          # GTK3 (introspecção GObject)
 gir1.2-gdkpixbuf-2.0    # carregamento de imagens
 desktop-file-utils      # validação/instalação do lançador .desktop
 '''
 
 
-def t_gitignore():
+def t_gitignore() -> str:
+    """Template do `.gitignore`."""
     return '''\
 # Ignora artefactos locais: ambiente virtual, caches, builds e packaging.
 .venv/
@@ -282,7 +391,8 @@ debian/__DIST__/
 '''
 
 
-def t_readme():
+def t_readme() -> str:
+    """Template do `README.md` principal."""
     return '''\
 # __VISIVEL__
 
@@ -302,7 +412,7 @@ Esqueleto criado com **urze** — substitui esta descrição pela do teu projeto
 
 Faz tudo, por fases: 1) pacotes apt que faltam (uma chamada `apt-get`
 agregada, sudo só aí) → 2) cria `.venv` com `--system-site-packages`
-(necessário para o `import gi` funcionar) → 3) `pip install -e .` →
+(necessário para o `import gi` funcionar) → 3) `pip install --no-build-isolation -e .` →
 4) verificação (`pip check` + GTK acessível).
 
 Verificação sem alterar nada — para CI ou auditoria:
@@ -381,7 +491,8 @@ GPL-3.0-or-later — ver `LICENSE`. Autor: __AUTOR__ (__GITHUB__).
 '''
 
 
-def t_notas():
+def t_notas() -> str:
+    """Template de `docs/notas.md` (diário de decisões do projeto)."""
     return '''\
 # Notas de desenvolvimento
 
@@ -407,11 +518,12 @@ Sugestão de disciplina: uma entrada por decisão, com data e porquê.
 
 
 # ------------------------------------------------------------------
-# TEMPLATES — data/ (lançador, AppStream, ícones).
+# TEMPLATES — data/ (lançador .desktop, AppStream XML, ícones).
 # ------------------------------------------------------------------
 
 
-def t_desktop():
+def t_desktop() -> str:
+    """Template do ficheiro `.desktop` (lançador FreeDesktop)."""
     return '''\
 # Lançador do ambiente de trabalho (ficheiro .desktop, formato INI).
 #
@@ -435,17 +547,22 @@ StartupNotify=true
 '''
 
 
-def t_metainfo():
+def t_metainfo() -> str:
+    """Template do ficheiro `.metainfo.xml` (AppStream).
+
+    [MELHORIA] Usa `__AUTOR_XML__`, `__VISIVEL_XML__` e `__DESC_XML__` para
+    garantir XML válido mesmo quando o autor ou descrição têm caracteres especiais.
+    """
     return '''\
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Metadados AppStream do __VISIVEL__: alimentam os "Software Centers"
+<!-- Metadados AppStream do __VISIVEL_XML__: alimentam os "Software Centers"
      (GNOME Software, Discover); validar com appstreamcli validate.
      O <id> tem de coincidir com o nome do lançador (__APPID__.desktop). -->
 <component type="desktop-application">
   <id>__APPID__</id>
   <metadata_license>FSFAP</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
-  <developer_name>__AUTOR__</developer_name>
+  <developer_name>__AUTOR_XML__</developer_name>
   <name>__VISIVEL_XML__</name>
   <summary>__DESC_XML__</summary>
   <description>
@@ -465,7 +582,8 @@ def t_metainfo():
 '''
 
 
-def t_icons_readme():
+def t_icons_readme() -> str:
+    """Template do guia de ícones em `data/icons/README.md`."""
     return '''\
 # Ícones do __VISIVEL__
 
@@ -486,7 +604,7 @@ lançador mostra um ícone genérico do ambiente — funciona, mas é feio.
 
        data/icons/scalable/apps/__APPID__.svg usr/share/icons/hicolor/scalable/apps/
 
-3. No .deb, o dh_icons actualiza as caches de ícones automaticamente.
+3. No .deb, o dh_icons atualiza as caches de ícones automaticamente.
 '''
 
 
@@ -495,7 +613,8 @@ lançador mostra um ícone genérico do ambiente — funciona, mas é feio.
 # ------------------------------------------------------------------
 
 
-def t_init():
+def t_init() -> str:
+    """Template de `src/__PKG__/__init__.py`."""
     return '''\
 # Ficha do pacote: docstring e __version__.
 # A versão vive APENAS aqui — o hatchling extrai-a daqui para o
@@ -507,7 +626,8 @@ __version__ = "0.1.0"
 '''
 
 
-def t_main_modulo():
+def t_main_modulo() -> str:
+    """Template de `src/__PKG__/__main__.py` (permite `python -m <pkg>`)."""
     return '''\
 # Ponto de entrada de `python -m __PKG__` — é assim que o ./run arranca.
 # Apenas delega no main() de main.py; sem lógica própria.
@@ -519,7 +639,15 @@ if __name__ == "__main__":
 '''
 
 
-def t_main():
+def t_main() -> str:
+    """Template de `src/__PKG__/main.py` (janela GTK3 principal).
+
+    [MELHORIA]
+    1. Usa `__VISIVEL_XML__` dentro de `rotulo.set_markup(...)` para que
+       nomes com '&' ou '<' não quebrem o parser Pango Markup.
+    2. Usa o token `__CLASSE__` (que antes estava calculado mas nunca era
+       usado) para dar nome à classe da aplicação (`__CLASSE__App`).
+    """
     return '''\
 # Janela de exemplo com tematização completa, no padrão GTK3 clássico:
 # um combo escolhe o esquema (sistema/preto/branco), um FontButton escolhe
@@ -583,7 +711,7 @@ class Janela(Gtk.ApplicationWindow):
 
         rotulo = Gtk.Label()
         rotulo.set_markup(
-            "<span size='x-large' weight='bold'>__VISIVEL__</span>\\n"
+            "<span size='x-large' weight='bold'>__VISIVEL_XML__</span>\\n"
             "O tema e a fonte aplicam-se a toda a aplicação, em tempo real."
         )
         rotulo.set_justify(Gtk.Justification.CENTER)
@@ -629,7 +757,7 @@ class Janela(Gtk.ApplicationWindow):
         )
 
 
-class Aplicacao(Gtk.Application):
+class __CLASSE__App(Gtk.Application):
     """Aplicação GTK3 — id __APPID__ (ver data/__APPID__.desktop)."""
 
     def __init__(self):
@@ -642,11 +770,12 @@ class Aplicacao(Gtk.Application):
 def main():
     """Ponto de entrada — chamado por __main__.py e pelo entry point __DIST__."""
     GLib.set_application_name("__VISIVEL__")
-    Aplicacao().run(sys.argv)
+    __CLASSE__App().run(sys.argv)
 '''
 
 
-def t_core():
+def t_core() -> str:
+    """Template de `src/__PKG__/core/__init__.py` (contrato `ModuloBase`)."""
     return '''\
 # Núcleo: contratos partilhados por todos os módulos. Aqui vivem as
 # classes-base, para que os módulos sigam o mesmo ciclo de vida e os
@@ -677,7 +806,8 @@ class ModuloBase:
 '''
 
 
-def t_views():
+def t_views() -> str:
+    """Template de `src/__PKG__/views/__init__.py`."""
     return '''\
 # Vistas: janelas, diálogos e widgets compostos da interface.
 # Convenção: um ficheiro por componente; a lógica de negócio vive em
@@ -686,7 +816,8 @@ def t_views():
 '''
 
 
-def t_config():
+def t_config() -> str:
+    """Template de `src/__PKG__/defaults/config.py` (persistência XDG JSON)."""
     return '''\
 # Configuração de aparência do utilizador: valores por omissão, validação
 # e persistência em ~/.config/__PKG__/aparencia.json (respeita o
@@ -741,7 +872,8 @@ def guardar_config(config: ConfigAparencia) -> None:
 '''
 
 
-def t_css_escuro():
+def t_css_escuro() -> str:
+    """Template de `src/__PKG__/defaults/tema_escuro.css`."""
     return '''\
 /* Paleta escura — aplicada no esquema "preto" (junto com
    gtk-application-prefer-dark-theme, para afinar com os widgets nativos).
@@ -786,7 +918,8 @@ combobox button.combo {
 '''
 
 
-def t_css_claro():
+def t_css_claro() -> str:
+    """Template de `src/__PKG__/defaults/tema_claro.css`."""
     return '''\
 /* Paleta clara — aplicada no esquema "branco". Editar à vontade:
    é um CSS GTK3 normal (seletores de widget). */
@@ -837,7 +970,8 @@ combobox button.combo {
 # ------------------------------------------------------------------
 
 
-def t_appearance_init():
+def t_appearance_init() -> str:
+    """Template de `src/__PKG__/modules/appearance/__init__.py`."""
     return '''\
 # API pública do módulo appearance — tematização da aplicação.
 #
@@ -870,16 +1004,23 @@ def aplicar_tema(janela: Gtk.Window, config: ConfigAparencia) -> None:
 '''
 
 
-def t_tema():
+def t_tema() -> str:
+    """Template de `src/__PKG__/modules/appearance/tema.py`.
+
+    [MELHORIA] Quando o utilizador escolhe o esquema `"sistema"`, usamos
+    `settings.reset_property("gtk-application-prefer-dark-theme")` em vez de
+    forçar `False`. Assim, se o ambiente de trabalho estiver em modo escuro,
+    o modo `"sistema"` respeita-o verdadeiramente.
+    """
     return '''\
 # Esquemas de cores via CssProvider (GTK3 clássico).
 #
 # Funcionamento: um único provider é registado no ecrã; a cada mudança,
 # o provider anterior é removido antes de o novo ser aplicado (evita
 # acumulação de providers e conflitos de prioridade). O modo "sistema"
-# não aplica CSS nenhum — deixa o tema do ambiente mandar; "preto" aplica
-# o tema escuro e liga gtk-application-prefer-dark-theme; "branco" aplica
-# o tema claro e desliga-a.
+# não aplica CSS de cores e repõe a preferência nativa do ambiente;
+# "preto" aplica o tema escuro e liga gtk-application-prefer-dark-theme;
+# "branco" aplica o tema claro e desliga-a.
 
 import sys
 from pathlib import Path
@@ -915,10 +1056,9 @@ class Tema:
     @staticmethod
     def remover() -> None:
         """Remove o provider atual (antes de reaplicar)."""
-        if Tema._provider is not None:
-            Gtk.StyleContext.remove_provider_for_screen(
-                Gdk.Screen.get_default(), Tema._provider
-            )
+        screen = Gdk.Screen.get_default()
+        if Tema._provider is not None and screen is not None:
+            Gtk.StyleContext.remove_provider_for_screen(screen, Tema._provider)
             Tema._provider = None
 
     @staticmethod
@@ -939,13 +1079,21 @@ class Tema:
                 return
             Gtk.StyleContext.add_provider_for_screen(screen, provider, PRIORIDADE)
             Tema._provider = provider
-        Gtk.Settings.get_default().set_property(
-            "gtk-application-prefer-dark-theme", esquema == "preto"
-        )
+
+        settings = Gtk.Settings.get_default()
+        if settings is not None:
+            if esquema == "sistema":
+                # Repõe o valor original do ambiente gráfico (claro ou escuro)
+                settings.reset_property("gtk-application-prefer-dark-theme")
+            else:
+                settings.set_property(
+                    "gtk-application-prefer-dark-theme", esquema == "preto"
+                )
 '''
 
 
-def t_fonte():
+def t_fonte() -> str:
+    """Template de `src/__PKG__/modules/appearance/fonte.py`."""
     return '''\
 # Fonte do utilizador → CSS. O GTK não aplica uma Pango.FontDescription
 # diretamente ao tema; o caminho fiável é converter a descrição escolhida
@@ -972,7 +1120,9 @@ class Fonte:
 
         familia = fonte.get_family()
         if familia:
-            propriedades.append(f'font-family: "{familia}";')
+            # Escapa eventuais aspas no nome da família antes de gerar o CSS
+            familia_segura = familia.replace('"', "'")
+            propriedades.append(f'font-family: "{familia_segura}";')
 
         tamanho = fonte.get_size() / Pango.SCALE
         if tamanho > 0:
@@ -994,7 +1144,13 @@ class Fonte:
 '''
 
 
-def t_test_smoke():
+def t_test_smoke() -> str:
+    """Template de `tests/test_smoke.py`.
+
+    [MELHORIA] Adicionados testes de persistência (`guardar_config` +
+    `carregar_config` e recuperação perante JSON corrompido) usando as
+    fixtures `monkeypatch` e `tmp_path` do `pytest`.
+    """
     return '''\
 # Testes de fumo: correm SEM GTK (não importam gi), para servirem de base
 # a CI mínimo. Testes de interface, se existirem, vivem em ficheiros
@@ -1004,7 +1160,13 @@ import pytest
 
 import __PKG__
 from __PKG__.core import ModuloBase
-from __PKG__.defaults.config import ESQUEMAS, ConfigAparencia
+from __PKG__.defaults.config import (
+    ESQUEMAS,
+    ConfigAparencia,
+    carregar_config,
+    ficheiro_config,
+    guardar_config,
+)
 
 
 def test_versao_definida():
@@ -1028,15 +1190,48 @@ def test_config_por_omissao():
 
 def test_esquemas_conhecidos():
     assert set(ESQUEMAS) == {"sistema", "preto", "branco"}
+
+
+def test_guardar_e_carregar_config(monkeypatch, tmp_path):
+    """Garante que a configuração é persistida e lida respeitando XDG_CONFIG_HOME."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    original = ConfigAparencia(esquema_cores="preto", fonte="Sans 12")
+    guardar_config(original)
+
+    lida = carregar_config()
+    assert lida.esquema_cores == "preto"
+    assert lida.fonte == "Sans 12"
+
+
+def test_carregar_config_json_invalido_usa_omissao(monkeypatch, tmp_path):
+    """Se o ficheiro JSON estiver corrompido, regressa às omissões sem crashar."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    caminho = ficheiro_config()
+    caminho.parent.mkdir(parents=True, exist_ok=True)
+    caminho.write_text("{json invalido", encoding="utf-8")
+
+    lida = carregar_config()
+    assert lida == ConfigAparencia()
 '''
 
 
 # ------------------------------------------------------------------
-# TEMPLATES — scripts/ (instalador e empacotamento Debian).
+# TEMPLATES — scripts/ (instalador em 4 fases e empacotamento Debian).
 # ------------------------------------------------------------------
 
 
-def t_install():
+def t_install() -> str:
+    """Template de `scripts/install.py`.
+
+    [MELHORIAS CRÍTICAS]
+    1. `ler_requisitos_apt()` e `versao_suficiente()`: separa corretamente o
+       operador Debian (`>=`, `>>`, `=`, `<=`, `<<`) do número da versão antes
+       de invocar `dpkg --compare-versions`. Antes passava `">= 1.0"` como
+       argumento de versão, o que fazia o `dpkg` falhar sempre.
+    2. `fase_pip()`: usa `pip install --no-build-isolation -e .` para construir
+       o pacote com o `python3-hatchling` já instalado via `apt`, evitando
+       downloads da internet durante a instalação local.
+    """
     return '''\
 #!/usr/bin/env python3
 # Instalador do projeto — prepara tudo num sistema Debian, em 4 fases:
@@ -1045,7 +1240,7 @@ def t_install():
 #             saltada dentro de Flatpak — detetado por FLATPAK_ID);
 #   2. venv — cria .venv com --system-site-packages, sem o qual o
 #             `import gi` não funciona dentro do venv;
-#   3. pip  — instala o próprio projeto: .venv/bin/pip install -e .
+#   3. pip  — instala o próprio projeto: .venv/bin/pip install --no-build-isolation -e .
 #   4. verificação — pip check + GTK3 acessível via gi.
 #
 # Modo de verificação (read-only, para CI):
@@ -1055,6 +1250,7 @@ def t_install():
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1064,6 +1260,18 @@ RAIZ = Path(__file__).resolve().parent.parent
 VENV = RAIZ / ".venv"
 REQ_APT = RAIZ / "requirements-apt.txt"
 DIST = "__DIST__"
+
+# Mapeamento de operadores de debian/control para operadores do `dpkg --compare-versions`
+OPERADORES_DPKG = {
+    ">=": "ge",
+    ">>": "gt",
+    ">": "gt",
+    "<=": "le",
+    "<<": "lt",
+    "<": "lt",
+    "=": "eq",
+    "==": "eq",
+}
 
 
 def ok(msg):
@@ -1080,15 +1288,23 @@ def erro(msg):
 
 # --- fase 1: pacotes de sistema --------------------------------------
 def ler_requisitos_apt():
-    """requirements-apt.txt → [(nome, versão_mínima|None)], sem comentários."""
+    """requirements-apt.txt → [(nome, (operador_dpkg, versão_mínima) | None)]."""
     requisitos = []
     for linha in REQ_APT.read_text(encoding="utf-8").splitlines():
         linha = linha.split("#", 1)[0].strip()
         if not linha:
             continue
         nome, _, resto = linha.partition("(")
-        versao = resto.strip().rstrip(")").strip() or None
-        requisitos.append((nome.strip(), versao))
+        restricao_bruta = resto.strip().rstrip(")").strip()
+        restricao = None
+        if restricao_bruta:
+            # Extrai operador opcional (ex.: '>= 1.2' → op='>=', ver='1.2')
+            m = re.match(r"^([<=>]+)?\\s*(.+)$", restricao_bruta)
+            if m:
+                op_simbolo = m.group(1) or ">="
+                op_dpkg = OPERADORES_DPKG.get(op_simbolo, "ge")
+                restricao = (op_dpkg, m.group(2).strip())
+        requisitos.append((nome.strip(), restricao))
     return requisitos
 
 
@@ -1107,13 +1323,14 @@ def estado_pacote(nome):
     return abreviatura.strip() == "ii", versao.strip()
 
 
-def versao_suficiente(instalada, minima):
+def versao_suficiente(instalada, restricao):
     """Compara versões com o dpkg (mesma semântica do debian/control)."""
-    if not minima:
+    if not restricao:
         return True
+    op_dpkg, versao_alvo = restricao
     try:
         return subprocess.run(
-            ["dpkg", "--compare-versions", instalada, "ge", minima],
+            ["dpkg", "--compare-versions", instalada, op_dpkg, versao_alvo],
             capture_output=True,
         ).returncode == 0
     except FileNotFoundError:
@@ -1130,7 +1347,7 @@ def fase_apt(verificar):
         return True
 
     faltantes = []
-    for nome, minima in ler_requisitos_apt():
+    for nome, restricao in ler_requisitos_apt():
         instalado, versao = estado_pacote(nome)
         if instalado is None:
             erro("dpkg-query indisponível — isto não parece ser um sistema Debian.")
@@ -1138,9 +1355,10 @@ def fase_apt(verificar):
         if not instalado:
             faltantes.append(nome)
             aviso(f"ausente: {nome}")
-        elif not versao_suficiente(versao, minima):
+        elif not versao_suficiente(versao, restricao):
+            _, ver_min = restricao
             faltantes.append(nome)
-            aviso(f"desatualizado: {nome} {versao} (mínimo {minima})")
+            aviso(f"desatualizado: {nome} {versao} (requer {ver_min})")
         else:
             ok(f"presente: {nome} {versao}")
 
@@ -1197,12 +1415,15 @@ def fase_pip(verificar):
             [str(python), "-m", "pip", "show", DIST], capture_output=True
         ).returncode == 0
         if instalado:
-            ok(f"pacote {DIST} instalado no venv (modo editável).")
+            ok(f"pacote {DIST} instalado no venv.")
             return True
         erro(f"pacote {DIST} não instalado no venv.")
         return False
+    # Usamos --no-build-isolation para reutilizar o python3-hatchling instalado
+    # via apt na fase 1, permitindo instalar mesmo sem ligação à internet.
     return subprocess.run(
-        [str(python), "-m", "pip", "install", "-e", "."], cwd=RAIZ
+        [str(python), "-m", "pip", "install", "--no-build-isolation", "-e", "."],
+        cwd=RAIZ,
     ).returncode == 0
 
 
@@ -1273,14 +1494,19 @@ if __name__ == "__main__":
 '''
 
 
-def t_build():
+def t_build() -> str:
+    """Template de `scripts/build_packages.sh`.
+
+    [MELHORIA] Adicionado `python3-all` à verificação de pacotes de build
+    para coincidir exatamente com o `Build-Depends` gerado em `debian/control`.
+    """
     return r'''\
 #!/usr/bin/env bash
 # Empacotamento Debian: gera debian/ a partir de requirements-apt.txt
 # (Depends:) e do pyproject.toml, e constrói o .deb com o pybuild.
 #
 # Requer (verificado em baixo): debhelper, dh-python,
-#   pybuild-plugin-pyproject, python3-hatchling, build-essential.
+#   pybuild-plugin-pyproject, python3-all, python3-hatchling, build-essential.
 # Idempotente: debian/changelog só se escreve à primeira vez (histórico
 # é teu); control, rules, install e format são regenerados a cada corrida.
 # Fonte do Depends: requirements-apt.txt — edita lá e volta a correr.
@@ -1303,7 +1529,7 @@ fi
 
 # Verifica as ferramentas de build (não instala: isso é decisão do utilizador)
 faltantes=()
-for pacote in debhelper dh-python pybuild-plugin-pyproject python3-hatchling build-essential; do
+for pacote in debhelper dh-python pybuild-plugin-pyproject python3-all python3-hatchling build-essential; do
     dpkg-query -W -f='${Status}' "$pacote" 2>/dev/null | grep -q "install ok installed" || faltantes+=("$pacote")
 done
 if [[ ${#faltantes[@]} -gt 0 ]]; then
@@ -1378,11 +1604,13 @@ echo ".deb construído em: $(dirname "$PWD")/"
 
 
 # ------------------------------------------------------------------
-# ESCRITA — registry, cabeçalhos por tipo e LICENSE.
+# ESCRITA — registo de ficheiros, cabeçalhos por tipo e LICENSE.
 # ------------------------------------------------------------------
 
-# (caminho, papel, função-geradora, executável). gerador None = ficheiro
-# vazio de protocolo (py.typed, PEP 561) — sem cabeçalho por ser marcador.
+# Tabela declarativa de todos os ficheiros que compõem o esqueleto:
+#   (caminho_relativo, descrição_do_papel, função_template, é_executável)
+# Quando `função_template` é None (ex.: `py.typed`), cria um ficheiro vazio
+# sem cabeçalho, conforme exigido pela PEP 561.
 FICHEIROS = [
     ("run", "arranque em desenvolvimento (venv + python -m)", t_run, True),
     ("pyproject.toml", "fonte única de metadados e dependências Python", t_pyproject, False),
@@ -1412,8 +1640,8 @@ FICHEIROS = [
 ]
 
 
-def estilo_para(relativo):
-    """Estilo do cabeçalho adequado ao tipo de ficheiro."""
+def estilo_para(relativo: str) -> str:
+    """Escolhe o estilo de comentário do cabeçalho consoante a extensão."""
     if relativo.endswith(".css"):
         return "css"
     if relativo.endswith(".md") or relativo.endswith(".xml"):
@@ -1421,25 +1649,43 @@ def estilo_para(relativo):
     return "#"
 
 
-def escrever(raiz, relativo, papel, corpo, executavel):
-    """Escreve um ficheiro com o cabeçalho em caixa (após o shebang, se houver)."""
+def escrever(
+    ctx: ContextoProjeto,
+    raiz: Path,
+    relativo: str,
+    papel: str,
+    corpo: str,
+    executavel: bool,
+) -> None:
+    """Escreve um ficheiro do projeto aplicando tokens, cabeçalho e permissões.
+
+    Se o ficheiro começar por shebang (`#!`) ou declaração XML (`<?xml`),
+    mantém essa primeira linha no topo (obrigatório pelo kernel Linux e pelo
+    parser XML) e insere o cabeçalho em caixa imediatamente a seguir.
+    """
     alvo = raiz / relativo
     alvo.parent.mkdir(parents=True, exist_ok=True)
-    conteudo = subst(corpo).lstrip("\n")
+    conteudo = subst(corpo, ctx).lstrip("\n")
+    bloco_cabec = cabec(ctx, Path(relativo).name, papel, estilo_para(relativo))
+
     if conteudo.startswith("#!") or conteudo.startswith("<?xml"):
-        # shebang e declaração XML têm de ficar na primeira linha — o
-        # cabeçalho em caixa vai logo a seguir.
         primeira, _, resto = conteudo.partition("\n")
-        conteudo = primeira + "\n" + cabec(Path(relativo).name, papel, estilo_para(relativo)) + resto
+        conteudo = primeira + "\n" + bloco_cabec + resto
     else:
-        conteudo = cabec(Path(relativo).name, papel, estilo_para(relativo)) + conteudo
+        conteudo = bloco_cabec + conteudo
+
     alvo.write_text(conteudo, encoding="utf-8")
     if executavel:
         alvo.chmod(0o755)
 
 
-def escrever_licenca(raiz):
-    """LICENSE com o texto integral da GPL-3.0 (fidelidade legal: sem cabeçalho)."""
+def escrever_licenca(ctx: ContextoProjeto, raiz: Path) -> None:
+    """Cria o ficheiro `LICENSE` com o texto integral da GPL-3.0.
+
+    Num sistema Debian, lê diretamente `/usr/share/common-licenses/GPL-3`
+    (instantâneo e offline). Só tenta descarregar de gnu.org se o ficheiro
+    local não existir.
+    """
     texto = ""
     local = Path("/usr/share/common-licenses/GPL-3")
     if local.exists():
@@ -1447,43 +1693,46 @@ def escrever_licenca(raiz):
     else:
         try:
             import urllib.request
-            with urllib.request.urlopen("https://www.gnu.org/licenses/gpl-3.0.txt", timeout=15) as r:
-                texto = r.read().decode("utf-8")
+
+            with urllib.request.urlopen(
+                "https://www.gnu.org/licenses/gpl-3.0.txt", timeout=15
+            ) as resposta:
+                texto = resposta.read().decode("utf-8")
         except OSError:
             texto = ""
-
     alvo = raiz / "LICENSE"
     if texto:
         alvo.write_text(texto, encoding="utf-8")
     else:
-        # Texto plano, sem moldura ou cabeçalho decorativo
         alvo.write_text(
-            "GNU GENERAL PUBLIC LICENSE\n"
-            "Versão 3.0 indisponível localmente e offline.\n"
-            "Descarrega o texto integral para este ficheiro a partir de:\n"
-            "https://www.gnu.org/licenses/gpl-3.0.txt\n",
+            cabec(ctx, "LICENSE", "texto integral da GNU General Public License v3.0")
+            + "Descarrega o texto oficial para aqui:\n"
+            "  https://www.gnu.org/licenses/gpl-3.0.txt\n",
             encoding="utf-8",
         )
         print("  [aviso] LICENSE: texto da GPL-3.0 indisponível localmente e online.")
+        print("          Descarrega-o manualmente de https://www.gnu.org/licenses/gpl-3.0.txt")
 
 
-def gerar(raiz):
-    """Escreve todos os ficheiros do esqueleto."""
+def gerar(ctx: ContextoProjeto, raiz: Path) -> None:
+    """Percorre a tabela `FICHEIROS` e materializa toda a estrutura em `raiz`."""
     for relativo, papel, gerador, executavel in FICHEIROS:
-        relativo = subst(relativo)
+        relativo_final = subst(relativo, ctx)
         if gerador is None:
-            (raiz / relativo).parent.mkdir(parents=True, exist_ok=True)
-            (raiz / relativo).write_text("", encoding="utf-8")
+            caminho_vazio = raiz / relativo_final
+            caminho_vazio.parent.mkdir(parents=True, exist_ok=True)
+            caminho_vazio.write_text("", encoding="utf-8")
             continue
-        escrever(raiz, relativo, papel, gerador(), executavel)
-    escrever_licenca(raiz)
+        escrever(ctx, raiz, relativo_final, papel, gerador(), executavel)
+    escrever_licenca(ctx, raiz)
 
 
-def mostrar_arvore(raiz):
-    """Imprime a árvore do que foi criado."""
+def mostrar_arvore(raiz: Path) -> None:
+    """Imprime no terminal a árvore visual de pastas e ficheiros criados."""
     print(f"\n{raiz.name}/")
 
-    def caminhar(diretorio, prefixo=""):
+    def caminhar(diretorio: Path, prefixo: str = "") -> None:
+        # Ordena pastas primeiro, depois ficheiros por ordem alfabética.
         entradas = sorted(diretorio.iterdir(), key=lambda p: (not p.is_dir(), p.name))
         for indice, entrada in enumerate(entradas):
             ultimo = indice == len(entradas) - 1
@@ -1496,13 +1745,12 @@ def mostrar_arvore(raiz):
 
 
 # ------------------------------------------------------------------
-# CLI — mista: flags na linha de comandos, interativo para o que faltar.
+# CLI — mista: aceita argumentos na linha de comandos e pergunta
+# interativamente apenas o que faltar (exceto se for passado `-y`).
 # ------------------------------------------------------------------
 
 
-def main(argv=None):
-    global NAO_INTERATIVO, AUTOR, GITHUB, DATA, DIST, PKG, APPID, CLASSE, VISIVEL, DESC
-
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="urze",
         description="Forja o esqueleto completo de um projeto Python desktop (GTK3 + Debian).",
@@ -1515,54 +1763,62 @@ def main(argv=None):
     parser.add_argument("nome", nargs="?", help="nome do projeto (ex.: meu-app); perguntado se faltar")
     parser.add_argument("--desc", help="descrição curta (uma frase)")
     parser.add_argument("--nome-visivel", help="nome apresentável (omissão: derivado do nome)")
-    parser.add_argument("--autor", default=AUTOR, help="autor dos cabeçalhos")
-    parser.add_argument("--github", default=GITHUB, help="endereço GitHub")
+    parser.add_argument("--autor", default=AUTOR_PADRAO, help="autor dos cabeçalhos")
+    parser.add_argument("--github", default=GITHUB_PADRAO, help="endereço GitHub")
     parser.add_argument("--dest", default=".", help="diretório onde criar <nome>/ (omissão: atual)")
     parser.add_argument("-y", "--sem-interativo", action="store_true", help="não perguntar; usa as omissões")
     args = parser.parse_args(argv)
 
-    NAO_INTERATIVO = args.sem_interativo
-    AUTOR = args.autor.strip() or AUTOR
-    GITHUB = (args.github.strip().rstrip("/") or GITHUB)
-    DATA = datetime.date.today().isoformat()
+    nao_interativo = args.sem_interativo
+    autor = sanitizar_texto_curto(args.autor, AUTOR_PADRAO)
+    github = args.github.strip().rstrip("/") or GITHUB_PADRAO
 
+    # 1. Obter e normalizar o nome técnico do projeto (dist e pkg)
     bruto = args.nome
     if bruto is None:
-        if NAO_INTERATIVO or not sys.stdin.isatty():
+        if nao_interativo or not sys.stdin.isatty():
             parser.error("falta o nome do projeto (corre sem -y num terminal, ou passa o nome)")
-        bruto = perguntar("Nome do projeto (ex.: meu-app)", "meu-app")
+        bruto = perguntar("Nome do projeto (ex.: meu-app)", "meu-app", nao_interativo=nao_interativo)
         if not bruto:
             parser.error("é necessário um nome de projeto")
 
-    DIST, PKG = normalizar(bruto)
-    APPID = f"pt.{DIST}"
-    CLASSE = "".join(parte.capitalize() for parte in PKG.split("_"))
-    VISIVEL = args.nome_visivel or perguntar(
-        "Nome apresentável", " ".join(parte.capitalize() for parte in DIST.split("-"))
+    dist, pkg = normalizar(bruto, nao_interativo=nao_interativo)
+
+    # 2. Derivar IDs, nome de classe, nome visível e descrição sanitizada
+    appid = construir_appid(autor, pkg)
+    classe = "".join(parte.capitalize() for parte in pkg.split("_"))
+
+    visivel_omissao = " ".join(parte.capitalize() for parte in dist.split("-"))
+    visivel_bruto = args.nome_visivel or perguntar(
+        "Nome apresentável", visivel_omissao, nao_interativo=nao_interativo
     )
-    DESC = args.desc or perguntar("Descrição curta", f"{VISIVEL} — aplicação desktop em Python/GTK3")
-    DESC = re.sub(r"\s+", " ", DESC.replace('"', "'")).strip() or VISIVEL
+    visivel = sanitizar_texto_curto(visivel_bruto, visivel_omissao)
 
-    TOKENS.update({
-        "__DIST__": DIST,
-        "__PKG__": PKG,
-        "__APPID__": APPID,
-        "__CLASSE__": CLASSE,
-        "__VISIVEL__": VISIVEL,
-        "__DESC__": DESC,
-        "__DESC_XML__": xml.sax.saxutils.escape(DESC),
-        "__VISIVEL_XML__": xml.sax.saxutils.escape(VISIVEL),
-        "__AUTOR__": AUTOR,
-        "__GITHUB__": GITHUB,
-        "__DATA__": DATA,
-    })
+    desc_omissao = f"{visivel} — aplicação desktop em Python/GTK3"
+    desc_bruta = args.desc or perguntar(
+        "Descrição curta", desc_omissao, nao_interativo=nao_interativo
+    )
+    desc = sanitizar_texto_curto(desc_bruta, visivel)
 
-    raiz = Path(args.dest).resolve() / DIST
+    # 3. Construir o contexto imutável da geração
+    ctx = ContextoProjeto(
+        dist=dist,
+        pkg=pkg,
+        appid=appid,
+        classe=classe,
+        visivel=visivel,
+        desc=desc,
+        autor=autor,
+        github=github,
+    )
+
+    # 4. Verificar diretório de destino e gerar os ficheiros
+    raiz = Path(args.dest).resolve() / dist
     if raiz.exists():
         print(f"urze: {raiz} já existe — escolhe outro nome ou --dest.", file=sys.stderr)
         return 2
 
-    gerar(raiz)
+    gerar(ctx, raiz)
     mostrar_arvore(raiz)
     print("\nEsqueleto criado. Próximos passos:")
     print(f"  cd {raiz}")

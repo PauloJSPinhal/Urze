@@ -24,11 +24,12 @@ Obrigado pelo interesse em contribuir para o **urze**. O objetivo do projeto é 
    ```bash
    git checkout -b feature/nome-da-melhoria
    ```
-3. Testa a geração de um projeto completo:
+3. Testa a geração de um projeto completo e os respetivos testes de fumo:
    ```bash
    python3 urze.py teste-app -y
    cd teste-app
    ./scripts/install.py --check
+   PYTHONPATH=src python3 -m pytest -q
    ```
 4. Assegura-te de que os ficheiros gerados mantêm as permissões corretas (ex.: `run`, `install.py` e `build_packages.sh` com permissão de execução `0o755`).
 5. Cria commits com mensagens descritivas.

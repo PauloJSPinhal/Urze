@@ -15,7 +15,7 @@ Não requer dependências externas — funciona nativamente com o `python3` da b
 - **Instalador em 4 Fases (`scripts/install.py`):**
   1. *apt*: Valida e instala pacotes Debian necessários (com deteção automática de ambientes Flatpak).
   2. *venv*: Cria o ambiente virtual com `--system-site-packages` (essencial para aceder a `gi` e GTK3).
-  3. *pip*: Instala a aplicação no venv em modo editável (`pip install -e .`).
+  3. *pip*: Instala a aplicação no venv em modo editável e sem isolamento de rede (`pip install --no-build-isolation -e .`).
   4. *check*: Validação com `pip check` e verificação de importação do GTK3.
 - **Tematização Desacoplada:** Módulo `appearance` com alternância entre temas (sistema, claro e escuro) e seleção de fontes em tempo real via Pango/CSS.
 - **Distribuição Pronta:** Lançador XDG (`.desktop`), metadados AppStream (`.metainfo.xml`) e script automatizado para gerar pacotes Debian (`scripts/build_packages.sh`).
@@ -103,11 +103,11 @@ meu-app/
 │   ├── install.py               # Instalador em 4 fases + verificação (--check)
 │   └── build_packages.sh        # Cria debian/ e constrói o pacote .deb
 ├── data/
-│   ├── pt.meu-app.desktop       # Lançador do ambiente de trabalho
-│   ├── pt.meu-app.metainfo.xml  # Metadados AppStream
-│   └── icons/README.md          # Guia para disposição dos ícones
+│   ├── pt.paulojspinhal.meu_app.desktop       # Lançador do ambiente de trabalho
+│   ├── pt.paulojspinhal.meu_app.metainfo.xml  # Metadados AppStream
+│   └── icons/README.md                        # Guia para disposição dos ícones
 ├── tests/
-│   └── test_smoke.py            # Testes sem interface gráfica
+│   └── test_smoke.py                          # Testes sem interface gráfica (inclui persistência XDG)
 └── src/
     └── meu_app/
         ├── __init__.py          # __version__ (fonte única da versão)
@@ -125,5 +125,5 @@ meu-app/
 
 ## Licença
 
-GPL-3.0-or-later — ver [LICENSE](LICENSE).  
+GPL-3.0-or-later — ver [LICENSE.md](LICENSE.md).  
 Autor: [PauloJSPinhal](https://github.com/PauloJSPinhal).
