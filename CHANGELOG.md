@@ -17,6 +17,7 @@ O formato baseia-se em [Keep a Changelog](https://keepachangelog.com/pt-PT/1.0.0
 - Guia `docs/5-como-adicionar-extras-e-criar-instaladores.md` atualizado com instruções passo a passo acessíveis para gerar `.deb`, `.AppImage`, `.exe` de Windows e `.dmg` de macOS.
 
 ### Corrigido
+- `src/<pkg>/modules/appearance/__init__.py`: corrigido o import relativo de `from ..defaults.config import ConfigAparencia` para `from ...defaults.config import ConfigAparencia` (pois `appearance` está em `modules/appearance/`, dois níveis abaixo da raiz do pacote).
 - `pyproject.toml`: adicionado `dev-mode-dirs = ["src"]` em `[tool.hatch.build.targets.wheel]` para que o `hatchling` crie um ficheiro `.pth` direto no `pip install --no-build-isolation -e .` sem depender do módulo externo `editables`.
 - `scripts/install.py` (Fase 4): a verificação `pip check` filtra conflitos do próprio projeto (ignorando falsos positivos de pacotes globais do sistema Debian visíveis via `--system-site-packages`) e valida explicitamente a importação de `<pkg>`.
 

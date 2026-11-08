@@ -1657,7 +1657,7 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk
 
-from ..defaults.config import ConfigAparencia
+from ...defaults.config import ConfigAparencia
 from .fonte import Fonte
 from .tema import Tema
 
@@ -2113,9 +2113,9 @@ def fase_verificar(verificar):
 
     em_ordem = True
 
-    # 1. Verifica que o próprio pacote do projeto é importável no venv
+    # 1. Verifica que o próprio pacote do projeto e o ponto de entrada são importáveis no venv
     resultado_pkg = subprocess.run(
-        [str(python), "-c", "import __PKG__; print(__PKG__.__version__)"],
+        [str(python), "-c", "import __PKG__, __PKG__.main; print(__PKG__.__version__)"],
         capture_output=True, text=True,
     )
     if resultado_pkg.returncode == 0:
