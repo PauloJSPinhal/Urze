@@ -31,6 +31,6 @@ Obrigado pelo interesse em contribuir para o **urze**. O objetivo do projeto é 
    ./scripts/install.py --check
    PYTHONPATH=src python3 -m pytest -q
    ```
-4. Assegura-te de que os ficheiros gerados mantêm as permissões corretas (ex.: `run`, `install.py` e `build_packages.sh` com permissão de execução `0o755`).
+4. Assegura-te de que os ficheiros gerados mantêm as permissões corretas (ex.: `run`, `install.py`, `build_packages.sh`, `build_appimage.sh`, `build_windows.sh` e `build_macos.sh` com permissão de execução `0o755`).
 5. Cria commits com mensagens descritivas.
 6. Submete um **Pull Request** detalhando as alterações efetuadas.

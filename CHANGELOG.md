@@ -3,13 +3,42 @@
 Todas as alterações relevantes a este projeto serão documentadas neste ficheiro.  
 O formato baseia-se em [Keep a Changelog](https://keepachangelog.com/pt-PT/1.0.0/).
 
+## [0.1.3] - 2026-11-08
+
+### Adicionado
+- Scripts `install.sh` e `uninstall.sh` no próprio projeto `Urze` (para instalar/remover o comando `urze` em `~/.local/bin` ou `/usr/local/bin`) e também na raiz dos novos projetos gerados (executam `scripts/install.py` e instalam/removem o comando `~/.local/bin/<dist>`, ícone SVG e atalho `.desktop` no menu do utilizador).
+- Suporte a nomes de pastas com maiúsculas (ex.: `OpenDWFx`), mantendo automaticamente o pacote Python (`src/opendwfx`) e o pacote Debian (`opendwfx`) em minúsculas.
+- Reutilização segura de pastas existentes: se a pasta do projeto já existir, não falha nem a recria, perguntando ficheiro a ficheiro se deve escrever por cima ou ignorar (`[e]screver / [i]gnorar / [t]odos escrever / [I]gnorar todos`).
+- Leitura da descrição do projeto a partir de ficheiro de texto (via `--desc-file FICHEIRO`, passando o caminho do ficheiro em `--desc`, ou escrevendo o caminho do ficheiro na pergunta interativa), preenchendo o resumo de 1 linha e a apresentação completa no `README.md`.
+- Suporte à geração de pacotes portáteis **AppImage** para Linux através de `scripts/build_appimage.sh` (cria `AppDir`, script `AppRun` e descarrega `appimagetool` automaticamente se ausente).
+- Suporte à geração de executáveis e instaladores para **Windows** em Modo Pasta (`--onedir`) + ZIP portátil + Instalador **Inno Setup** (`Setup-*.exe`) através de `scripts/build_windows.sh` (para MSYS2 MinGW64 + PyInstaller).
+- Suporte à geração de aplicações (`.app`) e instaladores de disco (`.dmg`) para **Apple macOS** através de `scripts/build_macos.sh` (Homebrew + PyInstaller + `iconutil` + `hdiutil`).
+- Geração automática de workflow **GitHub Actions** (`.github/workflows/build.yml`) para compilar e publicar na nuvem os instaladores de Linux (`.deb` + `.AppImage`), Windows (`Setup-*.exe` + `.zip`) e Apple macOS (`.dmg`) sem necessidade de máquinas Windows ou Mac locais.
+- Guia `docs/5-como-adicionar-extras-e-criar-instaladores.md` atualizado com instruções passo a passo acessíveis para gerar `.deb`, `.AppImage`, `.exe` de Windows e `.dmg` de macOS.
+
+### Corrigido
+- `pyproject.toml`: adicionado `dev-mode-dirs = ["src"]` em `[tool.hatch.build.targets.wheel]` para que o `hatchling` crie um ficheiro `.pth` direto no `pip install --no-build-isolation -e .` sem depender do módulo externo `editables`.
+- `scripts/install.py` (Fase 4): a verificação `pip check` filtra conflitos do próprio projeto (ignorando falsos positivos de pacotes globais do sistema Debian visíveis via `--system-site-packages`) e valida explicitamente a importação de `<pkg>`.
+
+### Alterado
+- `src/<pkg>/defaults/config.py`: `ficheiro_config()` passa a suportar nativamente o diretório `APPDATA` em Windows (`os.name == "nt"`) e `~/Library/Application Support` em macOS (`sys.platform == "darwin"`), mantendo `XDG_CONFIG_HOME` / `~/.config` em Linux.
+- `src/<pkg>/modules/appearance/tema.py`: localização da pasta `defaults/` compatível com execução congelada pelo PyInstaller (`sys._MEIPASS`).
+
 ## [0.1.2] - 2026-10-31
 
 ### Adicionado
+- Geração na raiz de modelos enxutos prontos a preencher ao longo do projeto: `README.md`, `LICENSE.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md` e `ARCHITECTURE.md`.
+- Criação de 5 guias passo a passo em `docs/` escritos em linguagem acessível para iniciantes, com títulos autoexplicativos:
+  - `docs/1-para-que-serve-cada-pasta-e-ficheiro.md`
+  - `docs/2-como-funciona-o-instalador-e-o-arranque.md`
+  - `docs/3-onde-escrever-o-teu-codigo.md`
+  - `docs/4-como-mudar-cores-letra-e-icone.md`
+  - `docs/5-como-adicionar-extras-e-criar-instalador-deb.md`
 - Geração automática de ícone vetorial de exemplo (`data/icons/scalable/apps/<appid>.svg`) no tema `hicolor`.
 - Suporte a cabeçalhos em comentário XML (`<!-- ... -->`) para ficheiros `.svg` em `estilo_para()`.
 
 ### Alterado
+- Ficheiro de licença gerado passa a ser `LICENSE.md`, incluindo no rodapé o bloco de copyright personalizado com nome, descrição, ano e autor do projeto.
 - `scripts/build_packages.sh` inclui automaticamente o ícone SVG gerado em `debian/<dist>.install` (`usr/share/icons/hicolor/scalable/apps/`).
 - Guia `data/icons/README.md` e `docs/notas.md` atualizados para refletir a presença do ícone SVG funcional de origem.
 

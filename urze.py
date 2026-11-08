@@ -19,12 +19,13 @@ Uso:
     python3 urze.py meu-app --desc "Uma aplicação GTK"
 
 Opções:
-    --desc "texto"        descrição curta do projeto (uma frase)
-    --nome-visivel "X"    nome apresentável (omissão: derivado do nome)
-    --autor "NOME"        autor dos cabeçalhos (omissão: PauloJSPinhal)
-    --github URL          endereço GitHub (omissão: https://github.com/PauloJSPinhal)
-    --dest DIR            diretório onde criar <nome>/ (omissão: '.')
-    -y, --sem-interativo  nunca perguntar; usa as omissões (para scripts/CI)
+    --desc "texto"         descrição curta (ou caminho para um ficheiro de texto)
+    --desc-file FICHEIRO   lê a descrição do projeto a partir de um ficheiro de texto
+    --nome-visivel "X"     nome apresentável (omissão: derivado do nome)
+    --autor "NOME"         autor dos cabeçalhos (omissão: PauloJSPinhal)
+    --github URL           endereço GitHub (omissão: https://github.com/PauloJSPinhal)
+    --dest DIR             diretório onde criar <nome>/ (omissão: '.')
+    -y, --sem-interativo   nunca perguntar; usa as omissões (para scripts/CI)
 
 Stdlib-only: corre num Debian nu com python3 apenas.
 Cada ficheiro gerado recebe um cabeçalho que o identifica, caracteriza e
@@ -58,32 +59,41 @@ GITHUB_PADRAO = "https://github.com/PauloJSPinhal"
 class ContextoProjeto:
     """Guarda todos os metadados normalizados e o mapa de tokens do projeto."""
 
-    dist: str                              # Nome PyPI/diretório, com traços:  meu-app
-    pkg: str                               # Nome de import Python, com _:     meu_app
-    appid: str                             # ID D-Bus/GTK (3 segmentos):       pt.paulojspinhal.meu_app
-    classe: str                            # Prefixo CamelCase para classes:   MeuApp
-    visivel: str                           # Nome legível para humanos:        Meu App
-    desc: str                              # Descrição curta sanitizada
+    pasta: str                             # Nome da pasta do projeto (mantém maiúsculas: ex. OpenDWFx)
+    dist: str                              # Nome PyPI/Debian em minúsculas:   opendwfx / meu-app
+    pkg: str                               # Nome de import Python, com _:     opendwfx / meu_app
+    appid: str                             # ID D-Bus/GTK (3 segmentos):       pt.paulojspinhal.opendwfx
+    classe: str                            # Prefixo CamelCase para classes:   OpenDWFx / MeuApp
+    visivel: str                           # Nome legível para humanos:        OpenDWFx / Meu App
+    desc: str                              # Descrição curta sanitizada (1 linha)
+    desc_longa: str = ""                   # Descrição longa (vinda de ficheiro de texto, se usado)
     autor: str = AUTOR_PADRAO              # Nome do autor nos cabeçalhos
     github: str = GITHUB_PADRAO            # URL base do GitHub do autor
     data: str = field(default_factory=lambda: datetime.date.today().isoformat())
+    nao_interativo: bool = False           # Modo -y (sem perguntas)
+    politica_existentes: str | None = None # None | "escrever_todos" | "ignorar_todos"
     tokens: dict[str, str] = field(init=False)
 
     def __post_init__(self) -> None:
         """Constrói o dicionário de substituição textual para os templates.
 
         [MELHORIA] Incluímos variantes escapadas para XML/Pango Markup
-        (__DESC_XML__, __VISIVEL_XML__, __AUTOR_XML__) para evitar que
-        caracteres como '&', '<' ou '>' quebrem o AppStream XML ou o
-        Pango Markup da janela GTK3.
+        (__DESC_XML__, __VISIVEL_XML__, __AUTOR_XML__) e __DESC_LONGA__
+        para quando a descrição é carregada de um ficheiro de texto.
         """
+        apresentacao = (
+            self.desc_longa.strip()
+            or "*(Escreve aqui uma breve apresentação do que o teu programa faz e para quem serve.)*"
+        )
         self.tokens = {
+            "__PASTA__": self.pasta,
             "__DIST__": self.dist,
             "__PKG__": self.pkg,
             "__APPID__": self.appid,
             "__CLASSE__": self.classe,
             "__VISIVEL__": self.visivel,
             "__DESC__": self.desc,
+            "__DESC_LONGA__": apresentacao,
             "__AUTOR__": self.autor,
             "__GITHUB__": self.github,
             "__DATA__": self.data,
@@ -159,41 +169,49 @@ def perguntar(rotulo: str, omissao: str = "", nao_interativo: bool = False) -> s
     return resposta or omissao
 
 
-def normalizar(bruto: str, nao_interativo: bool = False) -> tuple[str, str]:
-    """Normaliza o nome do projeto para as duas formas base: (dist, pkg).
+def normalizar(bruto: str, nao_interativo: bool = False) -> tuple[str, str, str]:
+    """Normaliza o nome do projeto para as três formas: (pasta, dist, pkg).
 
-    Convenção Python/PyPI/Debian:
-      - `dist` (diretório, pacote PyPI e pacote .deb): minúsculas e traços (ex.: 'meu-app')
-      - `pkg`  (módulo de import Python em src/):      minúsculas e underscores (ex.: 'meu_app')
+    Convenção:
+      - `pasta` (diretório do projeto): permite maiúsculas, minúsculas, dígitos,
+        traços e underscores (ex.: 'OpenDWFx', 'Meu-App').
+      - `dist`  (pacote PyPI e pacote .deb): minúsculas e traços (ex.: 'opendwfx', 'meu-app').
+      - `pkg`   (módulo de import Python em src/): minúsculas e underscores (ex.: 'opendwfx', 'meu_app').
 
     Valida se o nome começa por letra, não excede 40 caracteres e não colide
     com palavras reservadas da linguagem Python (ex.: 'class', 'import').
     """
-    # Converte espaços e underscores em traços e junta traços repetidos.
-    dist = re.sub(r"[\s_]+", "-", bruto.strip().lower())
+    # Preserva maiúsculas no nome da pasta, convertendo apenas espaços em traços.
+    pasta = re.sub(r"\s+", "-", bruto.strip())
+    pasta = re.sub(r"-{2,}", "-", pasta).strip("-")
+
+    # Para PyPI/Debian (dist), normaliza para minúsculas e traços.
+    dist = re.sub(r"[\s_]+", "-", pasta.lower())
     dist = re.sub(r"-{2,}", "-", dist).strip("-")
 
-    if not re.fullmatch(r"[a-z]([a-z0-9-]*[a-z0-9])?", dist):
+    if not re.fullmatch(r"[A-Za-z]([A-Za-z0-9_-]*[A-Za-z0-9])?", pasta):
         sys.exit(
             f"urze: nome inválido: {bruto!r}\n"
-            "  usa minúsculas, dígitos e traços, começando por letra (ex.: 'meu-app')."
+            "  usa letras (maiúsculas ou minúsculas), dígitos, traços ou underscores, "
+            "começando por letra (ex.: 'OpenDWFx' ou 'meu-app')."
         )
     pkg = dist.replace("-", "_")
     if keyword.iskeyword(pkg):
         sys.exit(f"urze: {pkg!r} é uma palavra reservada do Python; escolhe outro nome.")
-    if len(dist) > 40:
+    if len(pasta) > 40:
         sys.exit("urze: nome demasiado longo (máximo 40 caracteres).")
 
-    # Se o nome sofreu alterações (ex.: tinha maiúsculas ou espaços), pede confirmação.
-    if dist != bruto.strip() and not nao_interativo and sys.stdin.isatty():
+    # Só pede confirmação se o nome da pasta teve espaços/traços alterados
+    # (não incomoda o utilizador apenas por usar maiúsculas como 'OpenDWFx').
+    if pasta != bruto.strip() and not nao_interativo and sys.stdin.isatty():
         confirmado = perguntar(
-            f"Nome normalizado: {bruto!r} → {dist!r} (Enter confirma, ou escreve outro)",
-            dist,
+            f"Nome da pasta ajustado: {bruto!r} → {pasta!r} (Enter confirma, ou escreve outro)",
+            pasta,
             nao_interativo=nao_interativo,
         )
-        if confirmado and confirmado != dist:
+        if confirmado and confirmado != pasta:
             return normalizar(confirmado, nao_interativo=nao_interativo)
-    return dist, pkg
+    return pasta, dist, pkg
 
 
 def construir_appid(autor: str, pkg: str) -> str:
@@ -224,6 +242,69 @@ def sanitizar_texto_curto(texto: str, fallback: str) -> str:
     return limpo or fallback
 
 
+def carregar_descricao(
+    desc_arg: str | None,
+    desc_file_arg: str | None,
+    omissao: str,
+    visivel: str,
+    nao_interativo: bool,
+) -> tuple[str, str]:
+    """Obtém a descrição curta (1 linha) e longa (opcional), suportando ficheiro de texto.
+
+    Permite três formas de fornecer um ficheiro de texto com a descrição:
+      1. `--desc-file caminho/para/descricao.txt`
+      2. `--desc caminho/para/descricao.txt` (ou `@caminho/para/descricao.txt`)
+      3. Escrever o caminho do ficheiro diretamente quando perguntado no terminal.
+
+    Se o ficheiro tiver várias linhas:
+      - a primeira linha não vazia (sem `#` inicial) torna-se a descrição curta (`desc`);
+      - o texto completo do ficheiro torna-se a apresentação do `README.md` (`desc_longa`).
+    """
+    caminho_fich: Path | None = None
+
+    if desc_file_arg:
+        caminho_fich = Path(desc_file_arg).expanduser()
+        if not caminho_fich.is_file():
+            sys.exit(f"urze: ficheiro de descrição não encontrado: {desc_file_arg!r}")
+        bruto = ""
+    else:
+        bruto = desc_arg or perguntar(
+            "Descrição curta (ou caminho para ficheiro .txt/.md)",
+            omissao,
+            nao_interativo=nao_interativo,
+        )
+        candidato_str = bruto[1:].strip() if bruto.startswith("@") else bruto.strip()
+        if candidato_str and "\n" not in candidato_str and len(candidato_str) < 260:
+            try:
+                candidato = Path(candidato_str).expanduser()
+                if candidato.is_file():
+                    caminho_fich = candidato
+                elif bruto.startswith("@"):
+                    sys.exit(f"urze: ficheiro de descrição não encontrado: {candidato_str!r}")
+            except OSError:
+                pass
+
+    if caminho_fich is not None:
+        try:
+            conteudo = caminho_fich.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            sys.exit(f"urze: erro ao ler ficheiro de descrição {caminho_fich}: {exc}")
+        linhas_brutas = conteudo.splitlines()
+        primeira = ""
+        indice_resto = 0
+        for idx, ln in enumerate(linhas_brutas):
+            limpa = ln.strip().lstrip("#").strip()
+            if limpa:
+                primeira = limpa
+                indice_resto = idx + 1
+                break
+        desc_curta = sanitizar_texto_curto(primeira or omissao, visivel)
+        corpo_extra = "\n".join(linhas_brutas[indice_resto:]).strip()
+        return desc_curta, corpo_extra
+
+    return sanitizar_texto_curto(bruto, visivel), ""
+
+
 # ------------------------------------------------------------------
 # TEMPLATES — ficheiros de topo do projeto gerado.
 # Cada função `t_*()` devolve o corpo do ficheiro com marcadores
@@ -248,11 +329,167 @@ cd "$(dirname "$0")"
 
 PY=".venv/bin/python"
 if [[ ! -x "$PY" ]]; then
-    echo "Ambiente não configurado. Corre primeiro: ./scripts/install.py" >&2
+    echo "Ambiente não configurado. Corre primeiro: ./install.sh (ou ./scripts/install.py)" >&2
     exit 1
 fi
 
 exec "$PY" -m __PKG__ "$@"
+'''
+
+
+def t_install_sh() -> str:
+    """Template de `install.sh` na raiz do projeto gerado.
+
+    Executa o instalador em 4 fases (`scripts/install.py`) e regista a
+    aplicação no menu do utilizador (`~/.local/share/applications`), ícone
+    (`~/.local/share/icons/hicolor/scalable/apps`) e comando (`~/.local/bin`).
+    """
+    return r'''\
+#!/usr/bin/env bash
+# Instalador completo da aplicação:
+#   1. Corre `./scripts/install.py` (pacotes apt -> .venv -> pip -e . -> verificação)
+#   2. Instala o comando em `~/.local/bin/__DIST__`
+#   3. Instala o ícone e o atalho `.desktop` no menu de aplicações do utilizador
+#
+# Opções:
+#   ./install.sh            -> instala ambiente + atalho no menu do utilizador
+#   ./install.sh --dev      -> prepara apenas o ambiente de desenvolvimento (.venv)
+#   ./install.sh --check    -> apenas verifica se o ambiente está pronto (CI)
+
+set -euo pipefail
+cd "$(dirname "$(readlink -f "$0")")"
+
+RAIZ="$PWD"
+DIST="__DIST__"
+APPID="__APPID__"
+
+if [[ "${1:-}" == "--check" ]]; then
+    exec ./scripts/install.py --check
+fi
+
+APENAS_DEV=false
+if [[ "${1:-}" == "--dev" ]]; then
+    APENAS_DEV=true
+fi
+
+echo "==> A configurar ambiente com ./scripts/install.py..."
+./scripts/install.py
+
+if [[ "$APENAS_DEV" == true ]]; then
+    echo "  [ok]    Ambiente de desenvolvimento pronto. Corre: ./run"
+    exit 0
+fi
+
+echo "==> A instalar atalho e comando no perfil do utilizador..."
+BIN_DIR="${HOME}/.local/bin"
+APPS_DIR="${HOME}/.local/share/applications"
+ICON_DIR="${HOME}/.local/share/icons/hicolor/scalable/apps"
+
+mkdir -p "$BIN_DIR" "$APPS_DIR" "$ICON_DIR"
+
+# Cria wrapper executável em ~/.local/bin/__DIST__ que invoca o .venv do projeto
+cat > "${BIN_DIR}/${DIST}" <<FIM
+#!/usr/bin/env bash
+exec "${RAIZ}/run" "\$@"
+FIM
+chmod 755 "${BIN_DIR}/${DIST}"
+echo "  [ok]    Comando instalado em: ${BIN_DIR}/${DIST}"
+
+# Instala o ícone vetorial no tema hicolor do utilizador
+if [[ -f "data/icons/scalable/apps/${APPID}.svg" ]]; then
+    install -m 644 "data/icons/scalable/apps/${APPID}.svg" "${ICON_DIR}/${APPID}.svg"
+    echo "  [ok]    Ícone instalado em: ${ICON_DIR}/${APPID}.svg"
+fi
+
+# Instala o lançador .desktop apontando para o comando instalado
+if [[ -f "data/${APPID}.desktop" ]]; then
+    sed "s|^Exec=.*|Exec=${BIN_DIR}/${DIST}|" "data/${APPID}.desktop" > "${APPS_DIR}/${APPID}.desktop"
+    chmod 644 "${APPS_DIR}/${APPID}.desktop"
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "$APPS_DIR" >/dev/null 2>&1 || true
+    fi
+    echo "  [ok]    Atalho de menu instalado em: ${APPS_DIR}/${APPID}.desktop"
+fi
+
+echo
+echo "Instalação concluída! Podes iniciar com './run' ou pelo menu de aplicações."
+'''
+
+
+def t_uninstall_sh() -> str:
+    """Template de `uninstall.sh` na raiz do projeto gerado.
+
+    Remove o comando, ícone, atalho do menu de aplicações e opcionalmente
+    o ambiente virtual (`.venv`) e configurações do utilizador (`--purge`).
+    """
+    return r'''\
+#!/usr/bin/env bash
+# Desinstalador da aplicação:
+# Remove o atalho do menu de aplicações, ícone, comando em ~/.local/bin e .venv.
+#
+# Opções:
+#   ./uninstall.sh           -> remove atalho, ícone, comando e ambiente .venv
+#   ./uninstall.sh --keep-venv -> remove apenas atalho, ícone e comando (mantém .venv)
+#   ./uninstall.sh --purge   -> remove tudo incluindo configurações em ~/.config/__PKG__
+
+set -euo pipefail
+cd "$(dirname "$(readlink -f "$0")")"
+
+DIST="__DIST__"
+PKG="__PKG__"
+APPID="__APPID__"
+
+MANTER_VENV=false
+PURGAR_CONFIG=false
+
+for arg in "$@"; do
+    case "$arg" in
+        --keep-venv)
+            MANTER_VENV=true
+            ;;
+        --purge)
+            PURGAR_CONFIG=true
+            ;;
+        -h|--help)
+            echo "Utilização: ./uninstall.sh [--keep-venv] [--purge]"
+            echo "  --keep-venv   Remove apenas os atalhos do utilizador, mantendo a pasta .venv"
+            echo "  --purge       Remove também as preferências guardadas em ~/.config/${PKG}"
+            exit 0
+            ;;
+        *)
+            echo "Opção desconhecida: $arg" >&2
+            exit 1
+            ;;
+    esac
+done
+
+BIN_FILE="${HOME}/.local/bin/${DIST}"
+DESKTOP_FILE="${HOME}/.local/share/applications/${APPID}.desktop"
+ICON_FILE="${HOME}/.local/share/icons/hicolor/scalable/apps/${APPID}.svg"
+CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/${PKG}"
+
+for ficheiro in "$BIN_FILE" "$DESKTOP_FILE" "$ICON_FILE"; do
+    if [[ -f "$ficheiro" || -L "$ficheiro" ]]; then
+        rm -f "$ficheiro"
+        echo "  [ok]    Removido: $ficheiro"
+    fi
+done
+
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "${HOME}/.local/share/applications" >/dev/null 2>&1 || true
+fi
+
+if [[ "$MANTER_VENV" == false && -d ".venv" ]]; then
+    rm -rf .venv
+    echo "  [ok]    Ambiente virtual removido (.venv)"
+fi
+
+if [[ "$PURGAR_CONFIG" == true && -d "$CONFIG_DIR" ]]; then
+    rm -rf "$CONFIG_DIR"
+    echo "  [ok]    Configurações removidas ($CONFIG_DIR)"
+fi
+
+echo "  [ok]    Desinstalação concluída."
 '''
 
 
@@ -309,6 +546,10 @@ addopts = "-q"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/__PKG__"]
+# dev-mode-dirs cria um ficheiro .pth direto para src/ durante `pip install -e .`,
+# evitando que o hatchling exija o pacote externo `editables` (perfeito para
+# funcionar com `--no-build-isolation` e melhor para autocompletar no IDE).
+dev-mode-dirs = ["src"]
 '''
 
 
@@ -378,7 +619,7 @@ dist/
 .coverage
 htmlcov/
 
-# Empacotamento Debian (gerado por scripts/build_packages.sh)
+# Empacotamento Debian, AppImage, Windows e macOS (gerados por scripts/build_*.sh)
 debian/.debhelper/
 debian/files
 debian/*.log
@@ -388,132 +629,523 @@ debian/__DIST__/
 *.deb
 *.changes
 *.buildinfo
+*.AppImage
+AppDir/
+*.spec
+*.exe
+*.iss
+*.zip
+*.dmg
+*.icns
+*.app/
 '''
 
 
 def t_readme() -> str:
-    """Template do `README.md` principal."""
+    """Template do `README.md` na raiz — curto, para ir preenchendo ao longo do projeto."""
     return '''\
 # __VISIVEL__
 
 > __DESC__
 
-Aplicação desktop em Python 3 + GTK3, pensada para Debian/GNU Linux.
-Esqueleto criado com **urze** — substitui esta descrição pela do teu projeto.
+__DESC_LONGA__
 
-## Requisitos
+## Funcionalidades
 
-- Debian 11+ (ou derivado) com Python 3.9+
-- Pacotes de sistema listados em `requirements-apt.txt` (GTK3 via PyGObject)
+- [ ] *(Funcionalidade 1)*
+- [ ] *(Funcionalidade 2)*
 
-## Instalação (uma só passada)
+## Instalação
 
-    ./scripts/install.py
-
-Faz tudo, por fases: 1) pacotes apt que faltam (uma chamada `apt-get`
-agregada, sudo só aí) → 2) cria `.venv` com `--system-site-packages`
-(necessário para o `import gi` funcionar) → 3) `pip install --no-build-isolation -e .` →
-4) verificação (`pip check` + GTK acessível).
-
-Verificação sem alterar nada — para CI ou auditoria:
-
-    ./scripts/install.py --check
-
-## Uso
-
-    ./run
-
-O `run` executa `.venv/bin/python -m __PKG__`. O mesmo código é alcançado,
-sem venv, pelo entry point `__DIST__` instalado pelo `.deb` (ou `pip install .`).
-
-## Tematização (módulo appearance)
-
-- `src/__PKG__/defaults/tema_escuro.css` e `tema_claro.css` — edita à vontade;
-- esquemas de cores: `sistema` (segue o tema do ambiente), `preto`, `branco`;
-- fonte escolhível num `Gtk.FontButton`, injetada em CSS via Pango;
-- escolhas guardadas em `~/.config/__PKG__/aparencia.json`.
-
-API para usar noutros módulos/vistas:
-
-    from __PKG__.modules.appearance import aplicar_tema
-    aplicar_tema(self, self.config)
-
-## Estrutura
-
-```
-__DIST__/
-├── run                          # arranque em desenvolvimento (venv + -m)
-├── pyproject.toml               # fonte única: metadados + deps + entry point
-├── requirements.txt             # lock Python gerado (opcional)
-├── requirements-apt.txt         # fonte única das deps de sistema Debian
-├── scripts/
-│   ├── install.py               # 4 fases: apt → venv → pip → verificação
-│   └── build_packages.sh        # gera debian/ e constrói o .deb
-├── data/                        # lançador .desktop, metadados AppStream, ícones
-├── docs/notas.md                # decisões e notas de desenvolvimento
-├── tests/test_smoke.py          # testes que correm sem GTK
-└── src/__PKG__/
-    ├── __init__.py              # __version__ — fonte única da versão
-    ├── __main__.py              # python -m __PKG__
-    ├── main.py                  # janela de exemplo com tematização
-    ├── core/                    # contratos partilhados (ModuloBase)
-    ├── defaults/                # CSS dos temas + config por omissão
-    ├── views/                   # janelas e componentes da interface
-    └── modules/
-        └── appearance/          # API: aplicar_tema(janela, config)
+```bash
+./install.sh
 ```
 
-## Testes
+Para desinstalar:
 
-    ./scripts/install.py && .venv/bin/python -m pytest -q
-    # ou, sem venv:  PYTHONPATH=src python3 -m pytest -q
+```bash
+./uninstall.sh
+```
 
-## Empacotamento Debian (opcional)
+## Como Usar
 
-    ./scripts/build_packages.sh
+```bash
+./run
+```
 
-Gera `debian/` a partir de `requirements-apt.txt` (Depends:) e constrói
-`../__DIST___<versão>_<arquitetura>.deb`. Requer os pacotes de build
-listados no cabeçalho do script.
+## Ajuda para Programar neste Projeto
 
-## Convenção de módulos
-
-Cada módulo vive em `src/__PKG__/modules/<nome>/`:
-
-- API pública no `__init__.py` — pequena, estática, copiável entre projetos;
-- implementação em ficheiros internos (`tema.py`, `fonte.py`, …);
-- valores por omissão editáveis em `src/__PKG__/defaults/`;
-- quando precisa de ciclo de vida, herda de `__PKG__.core.ModuloBase`.
+Se tens dúvidas sobre como este esqueleto funciona ou onde deves escrever o teu código, consulta os guias passo a passo na pasta **[`docs/`](docs/)**.
 
 ## Licença
 
-GPL-3.0-or-later — ver `LICENSE`. Autor: __AUTOR__ (__GITHUB__).
+Distribuído sob a licença GPL-3.0-or-later. Consulta [LICENSE.md](LICENSE.md).  
+Autor: **__AUTOR__** (__GITHUB__)
+'''
+
+
+def t_architecture() -> str:
+    """Template do `ARCHITECTURE.md` na raiz — esqueleto curto para documentar a app à medida que cresce."""
+    return '''\
+# Arquitetura do Projeto — __VISIVEL__
+
+> **Dica:** Para perceberes como funciona a estrutura base criada pelo `urze` e onde escrever cada parte do código, lê os guias simples na pasta **[`docs/`](docs/)**.
+> Usa este ficheiro apenas para ires anotando o que a **tua** aplicação faz à medida que cresce.
+
+## Visão Geral
+
+*(Descreve aqui, em poucas linhas, como funciona o teu programa.)*
+
+## Módulos da Aplicação (`src/__PKG__/modules/`)
+
+| Módulo | O que faz |
+| :--- | :--- |
+| `appearance` | Muda as cores (sistema/claro/escuro) e o tipo de letra da janela |
+| *(novo módulo)* | *(Descreve o que faz quando o criares)* |
+
+## Janelas e Ecrãs (`src/__PKG__/views/`)
+
+| Ficheiro | Janela / Ecrã |
+| :--- | :--- |
+| `main.py` | Janela principal da aplicação |
+| *(nova vista)* | *(Descreve o ecrã ou caixa de diálogo quando a criares)* |
+'''
+
+
+def t_changelog() -> str:
+    """Template do `CHANGELOG.md` na raiz — esqueleto curto para registar versões."""
+    return '''\
+# Registo de Alterações (Changelog)
+
+Todas as alterações importantes do **__VISIVEL__** são anotadas aqui.
+
+## [Não Lançado]
+
+### Adicionado
+- 
+
+### Alterado
+- 
+
+### Corrigido
+- 
+
+## [0.1.0] - __DATA__
+
+### Adicionado
+- Criação inicial do projeto.
+'''
+
+
+def t_contributing() -> str:
+    """Template do `CONTRIBUTING.md` na raiz — esqueleto curto para colaboradores."""
+    return '''\
+# Como Contribuir — __VISIVEL__
+
+## Preparar o Ambiente
+
+```bash
+./scripts/install.py
+```
+
+## Correr o Programa
+
+```bash
+./run
+```
+
+## Correr os Testes
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+## Regras do Projeto
+
+- *(Acrescenta aqui as tuas notas ou regras para quem quiser ajudar no projeto.)*
+'''
+
+
+def t_security() -> str:
+    """Template do `SECURITY.md` na raiz — esqueleto curto de política de segurança."""
+    return '''\
+# Política de Segurança — __VISIVEL__
+
+## Versões Suportadas
+
+| Versão | Suportada |
+| :--- | :--- |
+| `0.1.x` | Sim |
+
+## Como Comunicar um Problema de Segurança
+
+Se encontrares uma falha de segurança, por favor contacta diretamente **__AUTOR__** através de __GITHUB__/__DIST__/issues (ou em privado no GitHub) descrevendo como reproduzir o problema.
+'''
+
+
+# ------------------------------------------------------------------
+# TEMPLATES — docs/ (Guias de ajuda em linguagem simples para iniciantes).
+# ------------------------------------------------------------------
+
+
+def t_doc_pastas_e_ficheiros() -> str:
+    """Guia 1 em `docs/`: explica cada pasta e ficheiro sem jargão técnico."""
+    return '''\
+# 1. Para que serve cada pasta e ficheiro
+
+Quando olhas para o projeto pela primeira vez, vês muitas pastas e ficheiros. Não te assustes: **90% do teu tempo vais mexer apenas dentro da pasta `src/__PKG__/`**. Tudo o resto está lá para trabalhar por ti nos bastidores.
+
+Aqui está a explicação simples de cada peça:
+
+---
+
+## Na pasta principal (Raiz)
+
+- **`install.sh`** — Instala tudo: prepara o ambiente (`.venv`) e cria o atalho do programa no menu de aplicações do teu computador.
+- **`uninstall.sh`** — Desinstala o atalho do menu, o comando e limpa o ambiente virtual (`.venv`).
+- **`run`** — É o botão de ligar do teu programa enquanto estás a programar. Escreves `./run` no terminal e a tua janela abre.
+- **`pyproject.toml`** — É o "bilhete de identidade" do projeto. Diz o nome do programa (`__DIST__`), quem é o autor e que bibliotecas de Python ele usa.
+- **`requirements-apt.txt`** — É a "lista de compras" para o sistema Linux (Debian/Ubuntu). Tem os nomes das peças que o próprio Linux precisa de ter instaladas para conseguir desenhar janelas no ecrã.
+- **`requirements.txt`** — Vem vazio. Só serve se um dia quiseres anotar versões exatas de bibliotecas extra.
+- **`README.md`, `CHANGELOG.md`, `ARCHITECTURE.md`, `CONTRIBUTING.md`, `SECURITY.md`, `LICENSE.md`** — Ficheiros de texto na raiz para ires preenchendo com informações sobre o teu programa à medida que o vais desenvolvendo.
+
+---
+
+## Pasta `src/__PKG__/` (Onde vive o teu programa!)
+
+É aqui dentro que está todo o código Python da tua aplicação:
+
+- **`__init__.py`** — Diz ao Python que esta pasta é um programa e guarda o número da versão (ex.: `__version__ = "0.1.0"`). **Nota:** tem mesmo de ter dois traços (`__`) de cada lado do nome!
+- **`__main__.py`** — Serve apenas de ponte: quando corres `./run`, o Python passa por aqui e salta logo para o `main.py`. Não precisas de mexer nele.
+- **`main.py`** — **Começa por aqui!** É onde está desenhada a janela inicial que vês quando abres o programa.
+- **`defaults/`** — Guarda as opções e as cores padrão do programa:
+  - `config.py`: Lê e grava as escolhas do utilizador (como o tema escuro ou claro) num ficheiro na pasta pessoal (`~/.config/__PKG__/aparencia.json`).
+  - `tema_escuro.css` e `tema_claro.css`: Ficheiros com as cores da janela.
+- **`modules/`** — É a pasta do **"cérebro"** do programa. Aqui colocas as funções que fazem contas, tratam de textos, guardam ficheiros ou ligam à internet. Já traz a pasta `appearance/` feita, que serve para mudar o tema de cores e o tipo de letra.
+- **`views/`** — É a pasta do **"rosto"** do programa. Quando o teu programa tiver mais janelas ou caixas de aviso, é aqui que as vais criar.
+- **`core/`** — Tem um modelo base (`ModuloBase`) para ajudar a organizar os teus módulos sempre da mesma maneira.
+
+---
+
+## As outras pastas de apoio
+
+- **`scripts/`** — Tem cinco ajudantes automáticos:
+  - `install.py`: Prepara o teu computador Linux todo sozinho para o programa funcionar (é chamado automaticamente pelo `./install.sh`).
+  - `build_packages.sh`: Cria um instalador `.deb` (para Debian, Ubuntu e Linux Mint).
+  - `build_appimage.sh`: Cria um ficheiro `.AppImage` portátil (funciona em qualquer Linux sem instalar).
+  - `build_windows.sh`: Cria a pasta executável (`.exe`) e o instalador para Windows (usando MSYS2 + PyInstaller + Inno Setup).
+  - `build_macos.sh`: Cria a aplicação `.app` e o instalador `.dmg` para computadores Apple (macOS).
+- **`.github/workflows/build.yml`** — Se colocares o projeto no GitHub, este ficheiro faz com que os computadores gratuitos do GitHub criem sozinhos os instaladores de Linux (`.deb` e `.AppImage`), Windows (`.exe`) e Apple macOS (`.dmg`) para ti!
+- **`data/`** — Tem o ícone do programa (`icons/`) e o atalho (`__APPID__.desktop`) para que o programa apareça no menu "Aplicações" do teu computador quando for instalado.
+- **`tests/`** — Serve para colocar pequenos testes automáticos que verificam se o teu código não tem erros básicos.
+- **`docs/`** — Esta pasta onde estás agora! Contém estes guias de ajuda e o ficheiro `notas.md` para apontares as tuas ideias.
+'''
+
+
+def t_doc_instalador_e_arranque() -> str:
+    """Guia 2 em `docs/`: explica como funciona o install.sh / install.py e o ./run."""
+    return '''\
+# 2. Como funciona o instalador e o arranque
+
+Para que uma aplicação gráfica em Python funcione sem dar dores de cabeça, o projeto traz três scripts prontos na pasta principal:
+- **`./install.sh`** — Instala tudo (ambiente + atalho no menu de aplicações).
+- **`./run`** — Abre o programa imediatamente enquanto estás a programar.
+- **`./uninstall.sh`** — Remove o atalho do menu e limpa o ambiente se quiseres desinstalar.
+
+Veja de forma simples o que cada um faz nos bastidores.
+
+---
+
+## O que acontece quando corres `./install.sh` (ou `./scripts/install.py`)?
+
+O `./install.sh` chama primeiro o `./scripts/install.py`, que prepara o terreno em **4 passos automáticos**:
+
+### Passo 1: Instalar peças do Linux (`apt`)
+Lê a lista `requirements-apt.txt` e vê se falta alguma peça no teu computador (por exemplo, o motor gráfico GTK3). Se faltar alguma, pede a tua palavra-passe (`sudo`) uma única vez e instala tudo. Se já tiveres tudo, avança logo.
+
+### Passo 2: Criar uma "caixa isolada" (`.venv`)
+Cria uma pasta oculta chamada `.venv`. Pensa nela como uma oficina privada só para este projeto: o que instalares ali dentro não estraga nada no resto do teu computador, mas consegue ver o motor gráfico do sistema.
+
+### Passo 3: Ligar o teu código (`pip`)
+Regista a pasta `src/__PKG__/` dentro dessa oficina `.venv`. Faz isto de uma forma especial ("modo editável"): sempre que mudares uma linha no teu código e guardares o ficheiro, a mudança fica logo ativa sem precisares de voltar a correr o instalador!
+
+### Passo 4: Teste final e atalho no menu
+Confirma que não faltam peças e que o Python já consegue abrir janelas GTK3. De seguida, o `./install.sh` copia o ícone e o atalho para a tua pasta pessoal (`~/.local/share/applications`), para que o programa apareça logo no menu de aplicações do computador.
+
+---
+
+## O que acontece quando corres `./run`?
+
+Quando escreves `./run` no terminal, acontece esta viagem em menos de um segundo:
+
+1. O `run` chama o Python que está dentro da oficina `.venv` e pede-lhe para abrir a pasta `src/__PKG__/`.
+2. O Python entra por `src/__PKG__/__main__.py`, que chama a função `main()` dentro de `src/__PKG__/main.py`.
+3. O `main.py` lê as preferências guardadas do utilizador (que cor e que letra escolheu da última vez) usando o `defaults/config.py`.
+4. O `main.py` desenha a janela no ecrã, aplica as cores através da pasta `modules/appearance/` e fica à espera que cliques num botão!
+'''
+
+
+def t_doc_onde_escrever_codigo() -> str:
+    """Guia 3 em `docs/`: guia prático passo a passo de onde programar."""
+    return '''\
+# 3. Onde escrever o teu código (Guia passo a passo)
+
+Quando começares a criar a tua aplicação, o segredo para não te perderes é separar o código em dois sítios:
+
+1. **A lógica (as contas, ler ficheiros, processar dados)** vai para `src/__PKG__/modules/`.
+2. **O visual (janelas, botões, caixas de texto)** vai para `src/__PKG__/main.py` e `src/__PKG__/views/`.
+
+Abaixo tens exemplos práticos prontos a copiar.
+
+---
+
+## Caso 1: Quero criar uma função nova (Lógica)
+
+Imagina que estás a fazer um programa que calcula descontos ou trata de um texto. Não coloques as contas misturadas com o código dos botões!
+
+**Passo 1:** Cria uma pasta nova dentro de `src/__PKG__/modules/`, por exemplo:
+`src/__PKG__/modules/calculadora/`
+
+**Passo 2:** Cria lá dentro um ficheiro `__init__.py` (com dois traços de cada lado) com a tua função:
+
+```python
+# Ficheiro: src/__PKG__/modules/calculadora/__init__.py
+
+def somar_valores(a: float, b: float) -> float:
+    """Soma dois números e devolve o resultado."""
+    return a + b
+```
+
+**Passo 3:** Agora, na tua janela (`src/__PKG__/main.py`), só tens de importar e usar:
+
+```python
+from .modules.calculadora import somar_valores
+
+resultado = somar_valores(10, 5)
+print(resultado)
+```
+
+---
+
+## Caso 2: Quero mexer na janela principal
+
+No início do projeto, podes desenhar os teus botões e caixas de texto diretamente no ficheiro **`src/__PKG__/main.py`**, dentro da classe `Janela`.
+
+Repara na zona que diz `# --- área de demonstração ---` dentro do `main.py`: podes apagar o botão, o campo de texto e o interruptor de exemplo que lá estão e colocar os teus próprios botões!
+
+---
+
+## Caso 3: O `main.py` está a ficar grande e quero outra janela
+
+Quando quiseres abrir uma segunda janela (por exemplo, uma janela de "Sobre" ou "Definições"), coloca-a na pasta **`src/__PKG__/views/`**.
+
+**Passo 1:** Cria o ficheiro `src/__PKG__/views/janela_sobre.py`:
+
+```python
+import gi
+
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk
+
+from ..modules.appearance import aplicar_tema
+
+
+class JanelaSobre(Gtk.Dialog):
+    def __init__(self, janela_mae, config):
+        super().__init__(title="Sobre", transient_for=janela_mae, flags=0)
+        self.add_buttons("Fechar", Gtk.ResponseType.CLOSE)
+        self.set_default_size(320, 150)
+
+        caixa = self.get_content_area()
+        caixa.pack_start(Gtk.Label(label="__VISIVEL__ — Criado por __AUTOR__"), True, True, 10)
+
+        # Aplica o mesmo tema (claro/escuro) e letra da janela principal
+        aplicar_tema(self, config)
+        self.show_all()
+```
+
+**Passo 2:** No `src/__PKG__/main.py`, importa e abre essa janela quando um botão for clicado:
+
+```python
+from .views.janela_sobre import JanelaSobre
+
+# Dentro de uma função de clique dum botão na Janela:
+dialogo = JanelaSobre(self, self.config)
+dialogo.run()
+dialogo.destroy()
+```
+
+---
+
+## Caso 4: Quero guardar uma preferência do utilizador
+
+Se quiseres que o programa se lembre de alguma escolha quando fecha e volta a abrir (por exemplo, o nome do utilizador):
+
+1. Abre `src/__PKG__/defaults/config.py`.
+2. Na classe `ConfigAparencia`, acrescenta a tua linha (ex.: `nome_utilizador: str = ""`).
+3. Na função `carregar_config()`, acrescenta a leitura desse campo.
+4. Sempre que chamares `guardar_config(self.config)`, essa informação fica gravada automaticamente!
+'''
+
+
+def t_doc_cores_letra_e_icone() -> str:
+    """Guia 4 em `docs/`: como personalizar o aspeto visual e o ícone."""
+    return '''\
+# 4. Como mudar cores, tipo de letra e ícone
+
+O teu projeto já traz um sistema pronto para mudar entre tema claro, tema escuro e tema do sistema, além de um ícone de exemplo. Veja como personalizar tudo ao teu gosto.
+
+---
+
+## 1. Mudar as cores dos temas (Claro e Escuro)
+
+As cores não estão escondidas no meio do código Python; estão em dois ficheiros fáceis de editar na pasta **`src/__PKG__/defaults/`**:
+
+- **`tema_escuro.css`** — Cores usadas quando o utilizador escolhe o esquema **Preto**.
+- **`tema_claro.css`** — Cores usadas quando o utilizador escolhe o esquema **Branco**.
+
+Podes abrir qualquer um deles num editor de texto e mudar os códigos das cores (por exemplo, `#1e2027`). Guarda o ficheiro, corre `./run` e vês logo as cores novas!
+
+---
+
+## 2. Mudar o tipo de letra inicial
+
+No ficheiro `src/__PKG__/main.py`, procura a linha:
+
+```python
+self.botao_fonte.set_font(config.fonte or "Noto Sans 11")
+```
+
+Se quiseres outro tamanho ou tipo de letra inicial (quando o utilizador ainda não escolheu nenhum), basta trocar `"Noto Sans 11"` por outro nome, como `"Sans 12"` ou `"Ubuntu 11"`.
+
+---
+
+## 3. Trocar o ícone da aplicação
+
+O programa já traz um ícone de exemplo criado em:
+**`data/icons/scalable/apps/__APPID__.svg`**
+
+Para colocares o teu próprio ícone:
+
+1. Cria ou descarrega um ícone em formato **`.svg`** (por exemplo, usando o programa gratuito Inkscape).
+2. Guarda-o por cima desse ficheiro com o mesmo nome: `data/icons/scalable/apps/__APPID__.svg`.
+
+Como tem o mesmo nome e já está no sítio certo, não precisas de mudar mais nada no código!
+'''
+
+
+def t_doc_extras_e_deb() -> str:
+    """Guia 5 em `docs/`: como instalar pacotes extra e criar instaladores (.deb, AppImage, Windows e macOS)."""
+    return '''\
+# 5. Como adicionar bibliotecas extra e criar instaladores (`Linux`, `Windows` e `macOS`)
+
+À medida que o teu programa cresce, podes precisar de usar bibliotecas novas ou podes querer partilhar o programa com outras pessoas em Linux, Windows ou computadores Apple (Mac).
+
+---
+
+## 1. Quando precisares de uma biblioteca nova
+
+Há dois lugares onde podes acrescentar ferramentas novas, dependendo do tipo de biblioteca:
+
+### A) Se for uma ferramenta do sistema Linux (Debian/Ubuntu)
+Por exemplo, um pacote que começa por `python3-...` ou `gir1.2-...`:
+1. Abre o ficheiro **`requirements-apt.txt`** na raiz do projeto.
+2. Escreve o nome do pacote numa linha nova.
+3. Corre `./scripts/install.py` no terminal.
+
+### B) Se for uma biblioteca de Python normal (`pip`)
+Por exemplo, `requests` ou `pillow`:
+1. Abre o ficheiro **`pyproject.toml`** na raiz do projeto.
+2. Procura a linha `dependencies = []` e coloca o nome lá dentro, assim:
+   ```toml
+   dependencies = ["requests"]
+   ```
+3. Corre `./scripts/install.py` no terminal.
+
+---
+
+## 2. Como criar um instalador `.deb` (Debian, Ubuntu, Linux Mint)
+
+Para instalares o programa como uma aplicação oficial do sistema (que aparece no menu de aplicações):
+
+1. Abre o terminal na pasta do projeto e corre:
+   ```bash
+   ./scripts/build_packages.sh
+   ```
+2. Ele cria um ficheiro **`.deb`** na pasta imediatamente acima da pasta do teu projeto.
+3. Para instalar no computador:
+   ```bash
+   sudo apt install ../__DIST___*.deb
+   ```
+
+---
+
+## 3. Como criar um `.AppImage` (Qualquer distribuição Linux)
+
+O formato **AppImage** é um único ficheiro portátil: quem o recebe só precisa de clicar duas vezes nele para abrir o programa, sem instalar nada.
+
+1. Abre o terminal na pasta do projeto e corre:
+   ```bash
+   ./scripts/build_appimage.sh
+   ```
+2. O script monta a estrutura `AppDir`, descarrega a ferramenta `appimagetool` (se ainda não a tiveres) e cria o ficheiro **`../__DIST__-<versão>-x86_64.AppImage`**.
+
+---
+
+## 4. Como criar o Executável e Instalador para Windows (`.exe`)
+
+O projeto cria a versão Windows em **Modo Pasta (`--onedir`) + Instalador (`Setup.exe`)**, para que o programa abra instantaneamente no Windows. Tens duas formas de o gerar:
+
+### Forma A: Automática pelo GitHub (Sem precisares de ter Windows!)
+1. Cria um repositório no GitHub e envia para lá o teu projeto (`git push`).
+2. O ficheiro **`.github/workflows/build.yml`** (que já vem pronto no projeto) entra em ação sozinho nos servidores do GitHub.
+3. Vai à página do teu projeto no GitHub → separador **Actions** → clica na última execução e descarrega o ficheiro **`instaladores-windows`** (traz o instalador `Setup-__DIST__.exe` e o `.zip` portátil)!
+
+### Forma B: Num computador (ou Máquina Virtual) com Windows
+1. No Windows, instala o **MSYS2** (https://www.msys2.org/) e opcionalmente o **Inno Setup** (https://jrsoftware.org/isinfo.php).
+2. Abre o terminal **MSYS2 MINGW64**, entra na pasta do teu projeto e corre:
+   ```bash
+   ./scripts/build_windows.sh
+   ```
+3. O script instala o Python + GTK3 para Windows, gera a pasta executável em `dist/__DIST__/`, cria um `.zip` portátil e (se o Inno Setup estiver instalado) cria o instalador **`dist/Setup-__DIST__-<versão>.exe`**!
+
+---
+
+## 5. Como criar o Instalador para Apple macOS (`.app` e `.dmg`)
+
+Nos computadores Apple, os programas vêm dentro de um ficheiro **`.dmg`** com a aplicação **`.app`** lá dentro (pronta para arrastar para a pasta *Aplicações*). Também tens duas formas de o criar:
+
+### Forma A: Automática pelo GitHub (Sem precisares de ter um Mac!)
+1. Quando envias o código para o GitHub (`git push`), o mesmo ficheiro **`.github/workflows/build.yml`** liga gratuitamente uma máquina Apple nos servidores do GitHub.
+2. Vai ao separador **Actions** do teu GitHub e descarrega o ficheiro **`instaladores-macos`** (contém o `dist/__DIST__-<versão>-macos.dmg`)!
+
+### Forma B: Num computador Apple (Mac)
+1. Com o **Homebrew** instalado (https://brew.sh/), abre o Terminal na pasta do projeto e corre:
+   ```bash
+   ./scripts/build_macos.sh
+   ```
+2. O script instala o GTK3 via Homebrew, cria a aplicação `dist/__DIST__.app` e empacota tudo no instalador **`dist/__DIST__-<versão>-macos.dmg`**.
+
+> **Nota para utilizadores de Mac:** Como o instalador é criado gratuitamente sem uma conta paga da Apple, na primeira vez que alguém abrir a aplicação no Mac deve clicar no ícone com o **botão direito → Abrir**.
 '''
 
 
 def t_notas() -> str:
     """Template de `docs/notas.md` (diário de decisões do projeto)."""
     return '''\
-# Notas de desenvolvimento
+# Notas e Ideias do Projeto
 
-Espaço livre para decisões, ideias e registos de trabalho do projeto.
-Sugestão de disciplina: uma entrada por decisão, com data e porquê.
-
-## Decisões
-
-- __DATA__ — Esqueleto criado com urze: src layout, pyproject como fonte
-  única, dependências de sistema em requirements-apt.txt, install.py em 4 fases,
-  GTK3 com módulo appearance para tematização.
+Usa este ficheiro como rascunho pessoal para apontares ideias, coisas a fazer ou notas enquanto programas.
 
 ## Ideias
 
-- (nada por agora)
+- 
 
 ## Tarefas
 
-- [ ] Substituir o exemplo do main.py pela primeira funcionalidade real
-- [ ] Personalizar o ícone vetorial em data/icons/scalable/apps/__APPID__.svg
-- [ ] Registar o projeto no README com capturas de ecrã
+- [ ] Ler os guias em `docs/` para conhecer a estrutura do projeto
+- [ ] Substituir os botões de exemplo do `src/__PKG__/main.py`
+- [ ] Personalizar o ícone em `data/icons/scalable/apps/__APPID__.svg`
 '''
 
 
@@ -850,6 +1482,7 @@ def t_config() -> str:
 
 import json
 import os
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -865,9 +1498,18 @@ class ConfigAparencia:
 
 
 def ficheiro_config() -> Path:
-    """Caminho do JSON de configuração, segundo o XDG Base Directory."""
-    base = os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
-    return Path(base) / "__PKG__" / "aparencia.json"
+    """Caminho do JSON de configuração (XDG em Linux, APPDATA em Windows, Library em macOS)."""
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    if xdg:
+        base = Path(xdg)
+    elif os.name == "nt":
+        appdata = os.environ.get("APPDATA")
+        base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path.home() / ".config"
+    return base / "__PKG__" / "aparencia.json"
 
 
 def carregar_config() -> ConfigAparencia:
@@ -1054,7 +1696,17 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, Gtk
 
-DIRETORIO_PADRAO = Path(__file__).resolve().parents[2] / "defaults"
+def _localizar_defaults() -> Path:
+    """Localiza a pasta `defaults/` (código normal ou congelado com PyInstaller)."""
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidato = Path(meipass) / "__PKG__" / "defaults"
+        if candidato.exists():
+            return candidato
+    return Path(__file__).resolve().parents[2] / "defaults"
+
+
+DIRETORIO_PADRAO = _localizar_defaults()
 PRIORIDADE = Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
 
 
@@ -1453,22 +2105,43 @@ def fase_pip(verificar):
 
 # --- fase 4: verificação -----------------------------------------------
 def fase_verificar(verificar):
-    """Fase 4 — pip check + o GTK3 tem de ser importável no venv."""
+    """Fase 4 — pacote importável + pip check do projeto + GTK3 acessível via gi."""
     python = VENV / "bin" / "python"
     if not python.exists():
         erro("venv ausente — nada a verificar.")
         return False
 
     em_ordem = True
+
+    # 1. Verifica que o próprio pacote do projeto é importável no venv
+    resultado_pkg = subprocess.run(
+        [str(python), "-c", "import __PKG__; print(__PKG__.__version__)"],
+        capture_output=True, text=True,
+    )
+    if resultado_pkg.returncode == 0:
+        ok(f"pacote __PKG__ ({resultado_pkg.stdout.strip()}) importável no venv.")
+    else:
+        erro(f"não foi possível importar __PKG__: {resultado_pkg.stderr.strip()}")
+        em_ordem = False
+
+    # 2. Verifica consistência de dependências do projeto no pip check
+    # Nota: como o venv usa --system-site-packages, o `pip check` global pode
+    # listar avisos de pacotes Debian do sistema alheios ao projeto (ex.: apt-listchanges).
+    # Por isso filtramos apenas linhas que digam respeito a este projeto (DIST).
     resultado = subprocess.run(
         [str(python), "-m", "pip", "check"], capture_output=True, text=True
     )
-    if resultado.returncode == 0:
-        ok("pip check: dependências Python consistentes.")
+    conflitos_projeto = [
+        linha for linha in (resultado.stdout + resultado.stderr).splitlines()
+        if linha.lower().startswith(DIST.lower() + " ")
+    ]
+    if not conflitos_projeto:
+        ok("pip check: dependências do projeto consistentes.")
     else:
-        erro(f"pip check: {(resultado.stdout or resultado.stderr).strip()}")
+        erro("pip check: " + "; ".join(conflitos_projeto))
         em_ordem = False
 
+    # 3. Verifica que o GTK3 está acessível no venv
     resultado = subprocess.run(
         [str(python), "-c",
          "import gi; gi.require_version('Gtk', '3.0'); from gi.repository import Gtk"],
@@ -1628,6 +2301,456 @@ echo ".deb construído em: $(dirname "$PWD")/"
 '''
 
 
+def t_build_appimage() -> str:
+    """Template de `scripts/build_appimage.sh` — gera `.AppImage` portátil para Linux."""
+    return r'''\
+#!/usr/bin/env bash
+# Empacotamento AppImage: monta um AppDir autónomo em build/AppDir/ com o
+# código do projeto, lançador .desktop, metadados AppStream e ícone SVG,
+# e empacota tudo num ficheiro executável único (.AppImage).
+#
+# Se o `appimagetool` não estiver instalado no sistema, descarrega a versão
+# oficial estática para `build/appimagetool-x86_64.AppImage`.
+#
+# Saída: ../__DIST__-<versão>-x86_64.AppImage
+
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+DIST="__DIST__"
+PKG="__PKG__"
+APPID="__APPID__"
+ARCH="$(uname -m)"
+
+VERSAO=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "src/${PKG}/__init__.py")
+if [[ -z "$VERSAO" ]]; then
+    echo "Não encontrei __version__ em src/${PKG}/__init__.py" >&2
+    exit 1
+fi
+
+APPDIR="$PWD/build/AppDir"
+rm -rf "$APPDIR"
+mkdir -p "$APPDIR/usr/bin" \
+         "$APPDIR/usr/lib/python3/dist-packages" \
+         "$APPDIR/usr/share/applications" \
+         "$APPDIR/usr/share/metainfo" \
+         "$APPDIR/usr/share/icons/hicolor/scalable/apps"
+
+echo "[1/4] A copiar pacote Python e recursos para AppDir..."
+cp -r "src/${PKG}" "$APPDIR/usr/lib/python3/dist-packages/"
+
+# Lançador e ícone exigidos na raiz do AppDir e em usr/share/
+cp "data/${APPID}.desktop" "$APPDIR/${APPID}.desktop"
+cp "data/${APPID}.desktop" "$APPDIR/usr/share/applications/${APPID}.desktop"
+cp "data/${APPID}.metainfo.xml" "$APPDIR/usr/share/metainfo/${APPID}.metainfo.xml"
+cp "data/icons/scalable/apps/${APPID}.svg" "$APPDIR/${APPID}.svg"
+cp "data/icons/scalable/apps/${APPID}.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/${APPID}.svg"
+ln -sf "${APPID}.svg" "$APPDIR/.DirIcon"
+
+echo "[2/4] A criar script de arranque AppRun..."
+cat > "$APPDIR/AppRun" <<'FIM'
+#!/usr/bin/env bash
+set -euo pipefail
+HERE="$(dirname "$(readlink -f "$0")")"
+export PYTHONPATH="${HERE}/usr/lib/python3/dist-packages:${PYTHONPATH:-}"
+export XDG_DATA_DIRS="${HERE}/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+exec python3 -m __PKG__ "$@"
+FIM
+chmod 755 "$APPDIR/AppRun"
+
+cat > "$APPDIR/usr/bin/${DIST}" <<'FIM'
+#!/usr/bin/env bash
+HERE="$(dirname "$(readlink -f "$0")")/../.."
+exec "$HERE/AppRun" "$@"
+FIM
+chmod 755 "$APPDIR/usr/bin/${DIST}"
+
+echo "[3/4] A localizar appimagetool..."
+APPIMAGETOOL=""
+if command -v appimagetool >/dev/null 2>&1; then
+    APPIMAGETOOL="appimagetool"
+else
+    LOCAL_TOOL="$PWD/build/appimagetool-${ARCH}.AppImage"
+    if [[ ! -x "$LOCAL_TOOL" ]]; then
+        echo "  appimagetool não encontrado no sistema; a descarregar para build/..."
+        URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${ARCH}.AppImage"
+        if command -v curl >/dev/null 2>&1; then
+            curl -fL "$URL" -o "$LOCAL_TOOL"
+        elif command -v wget >/dev/null 2>&1; then
+            wget -q "$URL" -O "$LOCAL_TOOL"
+        else
+            echo "Erro: instala 'appimagetool', 'curl' ou 'wget' para gerar a AppImage." >&2
+            exit 1
+        fi
+        chmod +x "$LOCAL_TOOL"
+    fi
+    APPIMAGETOOL="$LOCAL_TOOL"
+fi
+
+SAIDA="$(dirname "$PWD")/${DIST}-${VERSAO}-${ARCH}.AppImage"
+echo "[4/4] A construir ${SAIDA}..."
+ARCH="$ARCH" "$APPIMAGETOOL" --appimage-extract-and-run "$APPDIR" "$SAIDA"
+chmod +x "$SAIDA"
+echo
+echo "AppImage construída em: ${SAIDA}"
+'''
+
+
+def t_build_windows() -> str:
+    """Template de `scripts/build_windows.sh` — Modo Pasta (--onedir) + Instalador Inno Setup."""
+    return r'''\
+#!/usr/bin/env bash
+# Empacotamento para Windows (Modo Pasta --onedir + Instalador Setup.exe):
+# Desenhado para correr dentro do ambiente MSYS2 MINGW64 em Windows
+# (localmente num PC/VM Windows ou automaticamente via GitHub Actions).
+#
+# Porquê --onedir + Instalador:
+#   Em aplicações GTK3, o modo --onefile descompacta dezenas de DLLs a cada
+#   arranque (demorando 5 a 10 segundos a abrir). O modo --onedir cria uma
+#   pasta que abre instantaneamente e é depois empacotada num instalador
+#   clássico de Windows (Inno Setup) e num .zip portátil.
+#
+# Saídas em dist/:
+#   - dist/__DIST__/                                 (pasta executável)
+#   - dist/__DIST__-<versão>-windows-portable.zip    (ZIP portátil)
+#   - dist/Setup-__DIST__-<versão>.exe               (Instalador Windows, se Inno Setup presente)
+
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+DIST="__DIST__"
+PKG="__PKG__"
+VISIVEL="__VISIVEL__"
+APPID="__APPID__"
+AUTOR="__AUTOR__"
+GITHUB="__GITHUB__"
+
+if [[ "${MSYSTEM:-}" != "MINGW64" && "${OS:-}" != "Windows_NT" ]]; then
+    echo "Este script deve ser executado no Windows dentro do terminal 'MSYS2 MINGW64'" >&2
+    echo "(ou automaticamente na nuvem através de .github/workflows/build.yml)." >&2
+    exit 1
+fi
+
+VERSAO=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "src/${PKG}/__init__.py")
+if [[ -z "$VERSAO" ]]; then
+    echo "Não encontrei __version__ em src/${PKG}/__init__.py" >&2
+    exit 1
+fi
+
+echo "[1/5] A verificar dependências MSYS2 (Python + GTK3 + PyGObject)..."
+if command -v pacman >/dev/null 2>&1; then
+    pacman -S --needed --noconfirm \
+        mingw-w64-x86_64-python \
+        mingw-w64-x86_64-python-pip \
+        mingw-w64-x86_64-python-gobject \
+        mingw-w64-x86_64-gtk3 \
+        mingw-w64-x86_64-librsvg \
+        mingw-w64-x86_64-python-pillow \
+        zip
+fi
+
+echo "[2/5] A preparar PyInstaller e ícone .ico..."
+python3 -m pip install --upgrade --no-warn-script-location pyinstaller
+python3 -m pip install --no-build-isolation --no-deps .
+
+mkdir -p build dist
+ICO_PATH="build/${DIST}.ico"
+SVG_PATH="data/icons/scalable/apps/${APPID}.svg"
+
+# Converte o ícone SVG do projeto num ficheiro .ico para o executável Windows
+python3 - "$SVG_PATH" "$ICO_PATH" <<'PYEOF'
+import sys
+import gi
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import GdkPixbuf
+from PIL import Image
+
+svg_in, ico_out = sys.argv[1], sys.argv[2]
+pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(svg_in, 256, 256, True)
+ok, png_bytes = pixbuf.save_to_bufferv("png", [], [])
+if ok:
+    import io
+    img = Image.open(io.BytesIO(png_bytes))
+    img.save(ico_out, format="ICO", sizes=[(256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)])
+PYEOF
+
+echo "[3/5] A construir executável em Modo Pasta (--onedir) com PyInstaller..."
+pyinstaller \
+    --noconfirm \
+    --clean \
+    --onedir \
+    --windowed \
+    --name "${DIST}" \
+    --icon "${ICO_PATH}" \
+    --paths "src" \
+    --add-data "src/${PKG}/defaults;${PKG}/defaults" \
+    "src/${PKG}/__main__.py"
+
+echo "[4/5] A criar arquivo ZIP portátil..."
+(
+    cd dist
+    rm -f "${DIST}-${VERSAO}-windows-portable.zip"
+    zip -rq "${DIST}-${VERSAO}-windows-portable.zip" "${DIST}"
+)
+echo "  ZIP portátil: dist/${DIST}-${VERSAO}-windows-portable.zip"
+
+echo "[5/5] A gerar script do instalador Inno Setup (build/installer.iss)..."
+cat > build/installer.iss <<FIM
+[Setup]
+AppId={{${APPID}}
+AppName=${VISIVEL}
+AppVersion=${VERSAO}
+AppPublisher=${AUTOR}
+AppPublisherURL=${GITHUB}/${DIST}
+DefaultDirName={autopf}\\${VISIVEL}
+DefaultGroupName=${VISIVEL}
+OutputDir=..\\dist
+OutputBaseFilename=Setup-${DIST}-${VERSAO}
+SetupIconFile=${ICO_PATH}
+Compression=lzma2
+SolidCompression=yes
+WizardStyle=modern
+PrivilegesRequired=lowest
+
+[Languages]
+Name: "portuguese"; MessagesFile: "compiler:Languages\\Portuguese.isl"
+
+[Tasks]
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
+
+[Files]
+Source: "..\\dist\\${DIST}\\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Icons]
+Name: "{group}\\${VISIVEL}"; Filename: "{app}\\${DIST}.exe"
+Name: "{autodesktop}\\${VISIVEL}"; Filename: "{app}\\${DIST}.exe"; Tasks: desktopicon
+
+[Run]
+Filename: "{app}\\${DIST}.exe"; Description: "{cm:LaunchProgram,${VISIVEL}}"; Flags: nowait postinstall skipifsilent
+FIM
+
+ISCC_BIN=""
+if command -v ISCC.exe >/dev/null 2>&1; then
+    ISCC_BIN="ISCC.exe"
+elif [[ -x "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" ]]; then
+    ISCC_BIN="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
+elif [[ -x "/c/Program Files/Inno Setup 6/ISCC.exe" ]]; then
+    ISCC_BIN="/c/Program Files/Inno Setup 6/ISCC.exe"
+fi
+
+if [[ -n "$ISCC_BIN" ]]; then
+    "$ISCC_BIN" "build/installer.iss"
+    echo "  Instalador Windows criado em: dist/Setup-${DIST}-${VERSAO}.exe"
+else
+    echo "  [aviso] Inno Setup (ISCC.exe) não encontrado; instalador .exe saltado."
+    echo "          A pasta executável e o .zip portátil estão prontos em dist/."
+fi
+'''
+
+
+def t_build_macos() -> str:
+    """Template de `scripts/build_macos.sh` — Aplicação `.app` + Instalador `.dmg` para Apple macOS."""
+    return r'''\
+#!/usr/bin/env bash
+# Empacotamento para Apple macOS (.app + Instalador .dmg):
+# Desenhado para correr em macOS (localmente num Mac com Homebrew ou
+# automaticamente na nuvem através de GitHub Actions `macos-latest`).
+#
+# Saídas em dist/:
+#   - dist/__DIST__.app                      (Aplicação macOS em modo pasta/bundle)
+#   - dist/__DIST__-<versão>-macos.dmg       (Imagem de disco instaladora para Mac)
+
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+DIST="__DIST__"
+PKG="__PKG__"
+VISIVEL="__VISIVEL__"
+APPID="__APPID__"
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+    echo "Este script deve ser executado num sistema Apple macOS" >&2
+    echo "(ou automaticamente na nuvem através de .github/workflows/build.yml)." >&2
+    exit 1
+fi
+
+VERSAO=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "src/${PKG}/__init__.py")
+if [[ -z "$VERSAO" ]]; then
+    echo "Não encontrei __version__ em src/${PKG}/__init__.py" >&2
+    exit 1
+fi
+
+echo "[1/5] A verificar dependências Homebrew (Python + GTK3 + PyGObject)..."
+if command -v brew >/dev/null 2>&1; then
+    brew install pygobject3 gtk+3 librsvg adwaita-icon-theme
+fi
+
+echo "[2/5] A preparar ambiente e PyInstaller..."
+python3 -m venv .venv-macos --system-site-packages
+.venv-macos/bin/pip install --upgrade pip pyinstaller
+.venv-macos/bin/pip install --no-build-isolation --no-deps .
+
+mkdir -p build dist
+SVG_PATH="data/icons/scalable/apps/${APPID}.svg"
+ICONSET_DIR="build/${DIST}.iconset"
+ICNS_PATH="build/${DIST}.icns"
+
+echo "[3/5] A converter ícone SVG para formato Apple (.icns)..."
+rm -rf "$ICONSET_DIR"
+mkdir -p "$ICONSET_DIR"
+for sz in 16 32 128 256 512; do
+    rsvg-convert -w "$sz" -h "$sz" "$SVG_PATH" -o "${ICONSET_DIR}/icon_${sz}x${sz}.png"
+    sz2=$((sz * 2))
+    rsvg-convert -w "$sz2" -h "$sz2" "$SVG_PATH" -o "${ICONSET_DIR}/icon_${sz}x${sz}@2x.png"
+done
+iconutil -c icns "$ICONSET_DIR" -o "$ICNS_PATH"
+
+echo "[4/5] A construir aplicação ${DIST}.app com PyInstaller..."
+.venv-macos/bin/pyinstaller \
+    --noconfirm \
+    --clean \
+    --onedir \
+    --windowed \
+    --name "${DIST}" \
+    --icon "${ICNS_PATH}" \
+    --osx-bundle-identifier "${APPID}" \
+    --paths "src" \
+    --add-data "src/${PKG}/defaults:${PKG}/defaults" \
+    "src/${PKG}/__main__.py"
+
+echo "[5/5] A criar instalador de disco (.dmg)..."
+DMG_STAGING="build/dmg_staging"
+DMG_SAIDA="dist/${DIST}-${VERSAO}-macos.dmg"
+rm -rf "$DMG_STAGING" "$DMG_SAIDA"
+mkdir -p "$DMG_STAGING"
+cp -R "dist/${DIST}.app" "$DMG_STAGING/"
+ln -s /Applications "$DMG_STAGING/Applications"
+
+hdiutil create \
+    -volname "${VISIVEL}" \
+    -srcfolder "$DMG_STAGING" \
+    -ov \
+    -format UDZO \
+    "$DMG_SAIDA"
+
+echo
+echo "Instalador macOS criado em: ${DMG_SAIDA}"
+'''
+
+
+def t_github_workflow() -> str:
+    """Template de `.github/workflows/build.yml` — gera .deb, AppImage, Windows .exe e macOS .dmg."""
+    return r'''\
+# Automação GitHub Actions: sempre que envias código (push/PR) para o GitHub,
+# este ficheiro corre os testes e constrói automaticamente:
+#   1. Pacote Debian (.deb) e AppImage portátil (em Linux);
+#   2. Pasta executável (--onedir), ZIP portátil e Instalador Setup.exe (em Windows);
+#   3. Aplicação (.app) e Instalador de disco (.dmg) (em Apple macOS).
+# Os ficheiros prontos ficam disponíveis para download no separador "Actions" do GitHub.
+
+name: Testes e Instaladores (Linux + Windows + macOS)
+
+on:
+  push:
+    branches: ["main", "master"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: Linux (.deb + AppImage)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar dependências e criar ambiente
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y debhelper dh-python pybuild-plugin-pyproject python3-all python3-hatchling build-essential file
+          ./scripts/install.py
+
+      - name: Correr testes (pytest)
+        run: |
+          .venv/bin/pip install pytest
+          .venv/bin/python -m pytest -q
+
+      - name: Construir pacote Debian (.deb)
+        run: ./scripts/build_packages.sh
+
+      - name: Construir AppImage
+        run: ./scripts/build_appimage.sh
+
+      - name: Publicar instaladores Linux
+        uses: actions/upload-artifact@v4
+        with:
+          name: instaladores-linux
+          path: |
+            ../*.deb
+            ../*.AppImage
+
+  windows:
+    name: Windows (Modo Pasta + Instalador .exe)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar MSYS2 (MINGW64 + GTK3)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-python
+            mingw-w64-x86_64-python-pip
+            mingw-w64-x86_64-python-pytest
+            mingw-w64-x86_64-python-gobject
+            mingw-w64-x86_64-gtk3
+            mingw-w64-x86_64-librsvg
+            mingw-w64-x86_64-python-pillow
+            zip
+
+      - name: Correr testes (pytest)
+        run: PYTHONPATH=src python3 -m pytest -q
+
+      - name: Construir Executável (--onedir) + Instalador Windows
+        run: ./scripts/build_windows.sh
+
+      - name: Publicar instaladores Windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: instaladores-windows
+          path: |
+            dist/Setup-*.exe
+            dist/*-windows-portable.zip
+
+  macos:
+    name: Apple macOS (.app + Instalador .dmg)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar GTK3 e PyGObject via Homebrew
+        run: |
+          brew install pygobject3 gtk+3 librsvg adwaita-icon-theme pytest
+
+      - name: Correr testes (pytest)
+        run: PYTHONPATH=src python3 -m pytest -q
+
+      - name: Construir Aplicação (.app) e Instalador (.dmg)
+        run: ./scripts/build_macos.sh
+
+      - name: Publicar instalador macOS
+        uses: actions/upload-artifact@v4
+        with:
+          name: instaladores-macos
+          path: dist/*.dmg
+'''
+
+
 # ------------------------------------------------------------------
 # ESCRITA — registo de ficheiros, cabeçalhos por tipo e LICENSE.
 # ------------------------------------------------------------------
@@ -1638,18 +2761,33 @@ echo ".deb construído em: $(dirname "$PWD")/"
 # sem cabeçalho, conforme exigido pela PEP 561.
 FICHEIROS = [
     ("run", "arranque em desenvolvimento (venv + python -m)", t_run, True),
+    ("install.sh", "instalador da aplicação (ambiente + atalho no menu)", t_install_sh, True),
+    ("uninstall.sh", "desinstalador da aplicação (remove atalho, comando e .venv)", t_uninstall_sh, True),
     ("pyproject.toml", "fonte única de metadados e dependências Python", t_pyproject, False),
     ("requirements.txt", "lock Python gerado (opcional)", t_requirements, False),
     ("requirements-apt.txt", "dependências de sistema Debian", t_requirements_apt, False),
     (".gitignore", "artefactos locais a não versionar", t_gitignore, False),
-    ("README.md", "documentação principal", t_readme, False),
-    ("docs/notas.md", "notas de desenvolvimento", t_notas, False),
+    ("README.md", "apresentação do projeto (a preencher)", t_readme, False),
+    ("ARCHITECTURE.md", "registo da estrutura do projeto (a preencher)", t_architecture, False),
+    ("CHANGELOG.md", "histórico de versões (a preencher)", t_changelog, False),
+    ("CONTRIBUTING.md", "guia rápido de contribuição (a preencher)", t_contributing, False),
+    ("SECURITY.md", "política de segurança (a preencher)", t_security, False),
+    ("docs/1-para-que-serve-cada-pasta-e-ficheiro.md", "explicação simples de todas as pastas e ficheiros", t_doc_pastas_e_ficheiros, False),
+    ("docs/2-como-funciona-o-instalador-e-o-arranque.md", "explicação simples do install.py e do ./run", t_doc_instalador_e_arranque, False),
+    ("docs/3-onde-escrever-o-teu-codigo.md", "guia prático de onde criar funções e janelas", t_doc_onde_escrever_codigo, False),
+    ("docs/4-como-mudar-cores-letra-e-icone.md", "guia para personalizar cores, fonte e ícone", t_doc_cores_letra_e_icone, False),
+    ("docs/5-como-adicionar-extras-e-criar-instaladores.md", "guia para pacotes extra e instaladores (.deb, AppImage, Windows)", t_doc_extras_e_deb, False),
+    ("docs/notas.md", "bloco de notas e ideias do projeto", t_notas, False),
     ("data/__APPID__.desktop", "lançador do ambiente de trabalho", t_desktop, False),
     ("data/__APPID__.metainfo.xml", "metadados AppStream", t_metainfo, False),
     ("data/icons/README.md", "guia dos ícones", t_icons_readme, False),
     ("data/icons/scalable/apps/__APPID__.svg", "ícone vetorial de exemplo (hicolor)", t_icon_svg, False),
     ("scripts/install.py", "instalador em 4 fases + modo --check", t_install, True),
     ("scripts/build_packages.sh", "empacotamento Debian (.deb)", t_build, True),
+    ("scripts/build_appimage.sh", "empacotamento portátil Linux (.AppImage)", t_build_appimage, True),
+    ("scripts/build_windows.sh", "empacotamento Windows (--onedir + Instalador .exe)", t_build_windows, True),
+    ("scripts/build_macos.sh", "empacotamento Apple macOS (.app + Instalador .dmg)", t_build_macos, True),
+    (".github/workflows/build.yml", "automação GitHub Actions (Linux + Windows + macOS)", t_github_workflow, False),
     ("tests/test_smoke.py", "testes de fumo sem GTK", t_test_smoke, False),
     ("src/__PKG__/__init__.py", "ficha do pacote e __version__", t_init, False),
     ("src/__PKG__/__main__.py", "entrada de python -m", t_main_modulo, False),
@@ -1675,6 +2813,53 @@ def estilo_para(relativo: str) -> str:
     return "#"
 
 
+def deve_escrever_ficheiro(ctx: ContextoProjeto, alvo: Path, relativo: str) -> bool:
+    """Verifica se `alvo` já existe e, se existir, pergunta se escreve ou ignora.
+
+    Opções aceites na pergunta interativa:
+      - `s` / `e` : escrever (sobrescrever) este ficheiro
+      - `n` / `i` : ignorar (manter o ficheiro existente — opção por omissão no Enter)
+      - `t` / `E` : escrever TODOS os ficheiros existentes seguintes sem voltar a perguntar
+      - `I`       : ignorar TODOS os ficheiros existentes seguintes sem voltar a perguntar
+    """
+    if not alvo.exists():
+        return True
+
+    if ctx.politica_existentes == "escrever_todos":
+        return True
+    if ctx.politica_existentes == "ignorar_todos":
+        print(f"  [ignorado] {relativo}")
+        return False
+
+    if ctx.nao_interativo or not sys.stdin.isatty():
+        print(f"  [ignorado] {relativo} (já existe)")
+        return False
+
+    while True:
+        try:
+            resp = input(
+                f"  Ficheiro '{relativo}' já existe. "
+                "[e]screver / [i]gnorar / [t]odos escrever / [I]gnorar todos? [i]: "
+            ).strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            resp = "i"
+
+        if not resp or resp in ("i", "n", "nao", "não", "ignorar"):
+            print(f"  [ignorado] {relativo}")
+            return False
+        if resp in ("e", "s", "sim", "escrever"):
+            return True
+        if resp in ("t", "E", "todos"):
+            ctx.politica_existentes = "escrever_todos"
+            return True
+        if resp == "I":
+            ctx.politica_existentes = "ignorar_todos"
+            print(f"  [ignorado] {relativo}")
+            return False
+        print("    Responde 'e' (escrever), 'i' (ignorar), 't' (escrever todos) ou 'I' (ignorar todos).")
+
+
 def escrever(
     ctx: ContextoProjeto,
     raiz: Path,
@@ -1685,11 +2870,13 @@ def escrever(
 ) -> None:
     """Escreve um ficheiro do projeto aplicando tokens, cabeçalho e permissões.
 
-    Se o ficheiro começar por shebang (`#!`) ou declaração XML (`<?xml`),
-    mantém essa primeira linha no topo (obrigatório pelo kernel Linux e pelo
-    parser XML) e insere o cabeçalho em caixa imediatamente a seguir.
+    Se o ficheiro já existir, pergunta ao utilizador se quer escrever por cima
+    ou ignorar. Se começar por shebang (`#!`) ou declaração XML (`<?xml`),
+    mantém essa primeira linha no topo e insere o cabeçalho logo a seguir.
     """
     alvo = raiz / relativo
+    if not deve_escrever_ficheiro(ctx, alvo, relativo):
+        return
     alvo.parent.mkdir(parents=True, exist_ok=True)
     conteudo = subst(corpo, ctx).lstrip("\n")
     bloco_cabec = cabec(ctx, Path(relativo).name, papel, estilo_para(relativo))
@@ -1706,12 +2893,17 @@ def escrever(
 
 
 def escrever_licenca(ctx: ContextoProjeto, raiz: Path) -> None:
-    """Cria o ficheiro `LICENSE` com o texto integral da GPL-3.0.
+    """Cria o ficheiro `LICENSE.md` com o texto integral da GPL-3.0 e aviso personalizado.
 
     Num sistema Debian, lê diretamente `/usr/share/common-licenses/GPL-3`
     (instantâneo e offline). Só tenta descarregar de gnu.org se o ficheiro
-    local não existir.
+    local não existir. Acrescenta no final o bloco de aplicação da licença
+    preenchido com o nome, descrição, ano e autor do novo projeto.
     """
+    alvo = raiz / "LICENSE.md"
+    if not deve_escrever_ficheiro(ctx, alvo, "LICENSE.md"):
+        return
+
     texto = ""
     local = Path("/usr/share/common-licenses/GPL-3")
     if local.exists():
@@ -1726,17 +2918,39 @@ def escrever_licenca(ctx: ContextoProjeto, raiz: Path) -> None:
                 texto = resposta.read().decode("utf-8")
         except OSError:
             texto = ""
-    alvo = raiz / "LICENSE"
+
+    ano = ctx.data[:4]
+    apendice_projeto = (
+        "\n\n---\n\n"
+        f"## Registo de Copyright do Projeto — {ctx.visivel}\n\n"
+        "```text\n"
+        f"    {ctx.dist} — {ctx.desc}\n"
+        f"    Copyright (C) {ano}  {ctx.autor} ({ctx.github})\n\n"
+        "    This program is free software: you can redistribute it and/or modify\n"
+        "    it under the terms of the GNU General Public License as published by\n"
+        "    the Free Software Foundation, either version 3 of the License, or\n"
+        "    (at your option) any later version.\n\n"
+        "    This program is distributed in the hope that it will be useful,\n"
+        "    but WITHOUT ANY WARRANTY; without even the implied warranty of\n"
+        "    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n"
+        "    GNU General Public License for more details.\n\n"
+        "    You should have received a copy of the GNU General Public License\n"
+        "    along with this program.  If not, see <https://www.gnu.org/licenses/>.\n"
+        "```\n"
+    )
+
     if texto:
-        alvo.write_text(texto, encoding="utf-8")
+        alvo.write_text(texto.rstrip() + apendice_projeto, encoding="utf-8")
     else:
         alvo.write_text(
-            cabec(ctx, "LICENSE", "texto integral da GNU General Public License v3.0")
-            + "Descarrega o texto oficial para aqui:\n"
-            "  https://www.gnu.org/licenses/gpl-3.0.txt\n",
+            cabec(ctx, "LICENSE.md", "texto integral da GNU General Public License v3.0", estilo="html")
+            + "# GNU General Public License v3.0\n\n"
+            "Descarrega o texto oficial para aqui:\n"
+            "  https://www.gnu.org/licenses/gpl-3.0.txt\n"
+            + apendice_projeto,
             encoding="utf-8",
         )
-        print("  [aviso] LICENSE: texto da GPL-3.0 indisponível localmente e online.")
+        print("  [aviso] LICENSE.md: texto da GPL-3.0 indisponível localmente e online.")
         print("          Descarrega-o manualmente de https://www.gnu.org/licenses/gpl-3.0.txt")
 
 
@@ -1746,6 +2960,8 @@ def gerar(ctx: ContextoProjeto, raiz: Path) -> None:
         relativo_final = subst(relativo, ctx)
         if gerador is None:
             caminho_vazio = raiz / relativo_final
+            if not deve_escrever_ficheiro(ctx, caminho_vazio, relativo_final):
+                continue
             caminho_vazio.parent.mkdir(parents=True, exist_ok=True)
             caminho_vazio.write_text("", encoding="utf-8")
             continue
@@ -1781,13 +2997,15 @@ def main(argv: list[str] | None = None) -> int:
         prog="urze",
         description="Forja o esqueleto completo de um projeto Python desktop (GTK3 + Debian).",
         epilog="Exemplos:\n"
-               "  python3 urze.py meu-app\n"
+               "  python3 urze.py OpenDWFx\n"
+               "  python3 urze.py OpenDWFx --desc-file descricao.txt\n"
                "  python3 urze.py ferramenta --desc \"Uma ferramenta GTK\"\n"
                "  python3 urze.py                # interativo",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("nome", nargs="?", help="nome do projeto (ex.: meu-app); perguntado se faltar")
-    parser.add_argument("--desc", help="descrição curta (uma frase)")
+    parser.add_argument("nome", nargs="?", help="nome do projeto (ex.: OpenDWFx ou meu-app); perguntado se faltar")
+    parser.add_argument("--desc", help="descrição curta (ou caminho para ficheiro .txt/.md)")
+    parser.add_argument("--desc-file", help="ficheiro de texto de onde ler a descrição do projeto")
     parser.add_argument("--nome-visivel", help="nome apresentável (omissão: derivado do nome)")
     parser.add_argument("--autor", default=AUTOR_PADRAO, help="autor dos cabeçalhos")
     parser.add_argument("--github", default=GITHUB_PADRAO, help="endereço GitHub")
@@ -1799,56 +3017,73 @@ def main(argv: list[str] | None = None) -> int:
     autor = sanitizar_texto_curto(args.autor, AUTOR_PADRAO)
     github = args.github.strip().rstrip("/") or GITHUB_PADRAO
 
-    # 1. Obter e normalizar o nome técnico do projeto (dist e pkg)
+    # 1. Obter e normalizar o nome do projeto (pasta, dist e pkg)
     bruto = args.nome
     if bruto is None:
         if nao_interativo or not sys.stdin.isatty():
             parser.error("falta o nome do projeto (corre sem -y num terminal, ou passa o nome)")
-        bruto = perguntar("Nome do projeto (ex.: meu-app)", "meu-app", nao_interativo=nao_interativo)
+        bruto = perguntar("Nome do projeto (ex.: OpenDWFx ou meu-app)", "meu-app", nao_interativo=nao_interativo)
         if not bruto:
             parser.error("é necessário um nome de projeto")
 
-    dist, pkg = normalizar(bruto, nao_interativo=nao_interativo)
+    # Se o utilizador passou um caminho (ex.: /home/paulo/Projetos/2-Apps/OpenDWFx),
+    # separa o diretório pai para `dest_base` e o nome final para `bruto`.
+    dest_base = Path(args.dest).expanduser().resolve()
+    caminho_bruto = Path(bruto).expanduser()
+    if len(caminho_bruto.parts) > 1:
+        if args.dest == ".":
+            dest_base = caminho_bruto.resolve().parent
+        bruto = caminho_bruto.name
 
-    # 2. Derivar IDs, nome de classe, nome visível e descrição sanitizada
+    pasta, dist, pkg = normalizar(bruto, nao_interativo=nao_interativo)
+
+    # 2. Derivar IDs, nome de classe, nome visível e descrição (texto ou ficheiro)
     appid = construir_appid(autor, pkg)
-    classe = "".join(parte.capitalize() for parte in pkg.split("_"))
+    # Se o nome da pasta já tiver maiúsculas (ex.: OpenDWFx), preserva-as para a classe e nome visível
+    if any(c.isupper() for c in pasta):
+        classe = re.sub(r"[^A-Za-z0-9]", "", pasta)
+        visivel_omissao = re.sub(r"[-_]+", " ", pasta)
+    else:
+        classe = "".join(parte.capitalize() for parte in pkg.split("_"))
+        visivel_omissao = " ".join(parte.capitalize() for parte in dist.split("-"))
 
-    visivel_omissao = " ".join(parte.capitalize() for parte in dist.split("-"))
     visivel_bruto = args.nome_visivel or perguntar(
         "Nome apresentável", visivel_omissao, nao_interativo=nao_interativo
     )
     visivel = sanitizar_texto_curto(visivel_bruto, visivel_omissao)
 
     desc_omissao = f"{visivel} — aplicação desktop em Python/GTK3"
-    desc_bruta = args.desc or perguntar(
-        "Descrição curta", desc_omissao, nao_interativo=nao_interativo
+    desc, desc_longa = carregar_descricao(
+        args.desc, args.desc_file, desc_omissao, visivel, nao_interativo
     )
-    desc = sanitizar_texto_curto(desc_bruta, visivel)
 
-    # 3. Construir o contexto imutável da geração
+    # 3. Construir o contexto da geração
     ctx = ContextoProjeto(
+        pasta=pasta,
         dist=dist,
         pkg=pkg,
         appid=appid,
         classe=classe,
         visivel=visivel,
         desc=desc,
+        desc_longa=desc_longa,
         autor=autor,
         github=github,
+        nao_interativo=nao_interativo,
     )
 
-    # 4. Verificar diretório de destino e gerar os ficheiros
-    raiz = Path(args.dest).resolve() / dist
+    # 4. Verificar diretório de destino (se já existir, não o recria — reutiliza-o)
+    raiz = dest_base / pasta
     if raiz.exists():
-        print(f"urze: {raiz} já existe — escolhe outro nome ou --dest.", file=sys.stderr)
-        return 2
+        print(f"  [info] Pasta '{raiz}' já existe — a utilizar a pasta existente.")
+    else:
+        raiz.mkdir(parents=True, exist_ok=True)
 
     gerar(ctx, raiz)
     mostrar_arvore(raiz)
-    print("\nEsqueleto criado. Próximos passos:")
+    print("\nEsqueleto pronto. Próximos passos:")
     print(f"  cd {raiz}")
-    print("  ./scripts/install.py        # apt → venv → pip → verificação")
+    print("  ./install.sh                # instala ambiente + atalho (ou ./scripts/install.py)")
     print("  ./run                       # abre a janela de exemplo")
     print("  git init && git add -A && git commit -m 'Versão inicial'")
     return 0
